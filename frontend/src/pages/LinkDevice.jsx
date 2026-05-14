@@ -1,3 +1,4 @@
+import { apiUrl } from '../utils/api'
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
@@ -17,7 +18,7 @@ export default function LinkDevice({ onLogin }) {
     setStatus('scanning')
     try {
       // No auth required — the QR token is the authentication
-      const res = await fetch(`/api/devices/qr/${qrToken}/scan`, {
+      const res = await fetch(apiUrl(`/api/devices/qr/${qrToken}/scan`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -43,7 +44,7 @@ export default function LinkDevice({ onLogin }) {
     for (let i = 0; i < 150; i++) {
       await new Promise(r => setTimeout(r, 2000))
       try {
-        const res = await fetch(`/api/devices/qr/${qrToken}/await`)
+        const res = await fetch(apiUrl(`/api/devices/qr/${qrToken}/await`))
         if (res.status === 410) {
           setStatus('error'); setErrorMsg('QR code expired. Please generate a new one.'); return
         }
@@ -55,7 +56,7 @@ export default function LinkDevice({ onLogin }) {
           if (data.status === 'approved' && data.jwt) {
             localStorage.setItem('token', data.jwt)
             try {
-              const me = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${data.jwt}` } })
+              const me = await fetch(apiUrl('/api/auth/me'), { headers: { Authorization: `Bearer ${data.jwt}` } })
               if (me.ok) localStorage.setItem('user', JSON.stringify(await me.json()))
             } catch {}
             setStatus('approved')

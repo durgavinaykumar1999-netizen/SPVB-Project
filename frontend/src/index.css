@@ -942,7 +942,7 @@ body {
   /* Settings panel full width */
   .wa-call-modal > div[style] {
     width: 100vw !important;
-    min(380px, 100vw): unset;
+    min-width: unset;
   }
 
   /* Input bar safe area on iOS */

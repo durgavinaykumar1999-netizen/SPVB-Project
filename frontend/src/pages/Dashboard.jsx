@@ -6,6 +6,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { silentlyRefreshGoogleTokens, syncContactsWithToken, isGmailTokenValid, storeGmailToken, requestAllGooglePermissions } from '../utils/googleTokens'
+import { wsUrl, apiUrl } from '../utils/api'
 import CallScreen from '../components/CallScreen'
 import IncomingCallBanner from '../components/IncomingCallBanner'
 import AddContactModal from '../components/AddContactModal'
@@ -375,7 +376,7 @@ export default function Dashboard({ onLogout }) {
     } catch (_) { navigate('/login'); return }
 
     // Refresh user profile from DB on startup (gets latest avatar_url, cover_url, display_name)
-    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+    fetch(apiUrl('/api/auth/me'), { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(fresh => {
         if (!fresh) return
@@ -389,7 +390,7 @@ export default function Dashboard({ onLogout }) {
 
     const beat = async () => {
       try {
-        const r = await fetch('/api/users/me/status', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: 'online' }) })
+        const r = await fetch(apiUrl('/api/users/me/status'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: 'online' }) })
         if (r.status === 401) { localStorage.clear(); navigate('/login') }
       } catch (_) {}
     }
@@ -404,7 +405,7 @@ export default function Dashboard({ onLogout }) {
     const loadContacts = async () => {
       setContactsLoading(true)
       try {
-        const res = await fetch('/api/contacts', { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(apiUrl('/api/contacts'), { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const contacts = await res.json()
           setSpvbContacts(contacts)
@@ -419,7 +420,7 @@ export default function Dashboard({ onLogout }) {
 
     const loadGroups = async () => {
       try {
-        const res = await fetch('/api/groups', { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(apiUrl('/api/groups'), { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) setGroups(await res.json())
       } catch {}
     }
@@ -428,7 +429,7 @@ export default function Dashboard({ onLogout }) {
 
     const loadSavedContacts = async () => {
       try {
-        const res = await fetch('/api/contacts/saved', { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(apiUrl('/api/contacts/saved'), { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const { saved_contact_ids } = await res.json()
           setSavedContactIds(new Set(saved_contact_ids))
@@ -440,7 +441,7 @@ export default function Dashboard({ onLogout }) {
 
     const loadBlocked = async () => {
       try {
-        const res = await fetch('/api/contacts/blocked', { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(apiUrl('/api/contacts/blocked'), { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const list = await res.json()
           setBlockedIds(new Set(list.map(u => u.id)))
@@ -452,7 +453,7 @@ export default function Dashboard({ onLogout }) {
     const recentCacheRef = { current: null }
     const fetchRecent = async () => {
       try {
-        const res = await fetch('/api/messages/recent', { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(apiUrl('/api/messages/recent'), { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const data = await res.json()
           const mapped = {}
@@ -521,7 +522,7 @@ export default function Dashboard({ onLogout }) {
         pollOnline()
         syncWithRetry()
       } else {
-        fetch('/api/users/me/status', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: 'offline' }) }).catch(() => {})
+        fetch(apiUrl('/api/users/me/status'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: 'offline' }) }).catch(() => {})
       }
     }
     document.addEventListener('visibilitychange', onVisible)
@@ -536,7 +537,7 @@ export default function Dashboard({ onLogout }) {
 
     const pollOnline = async () => {
       try {
-        const res = await fetch('/api/users/online', { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(apiUrl('/api/users/online'), { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) setOnlineMap(await res.json())
       } catch (_) {}
     }
@@ -545,7 +546,7 @@ export default function Dashboard({ onLogout }) {
 
     const fetchStatuses = async () => {
       try {
-        const res = await fetch('/api/statuses', { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(apiUrl('/api/statuses'), { headers: { Authorization: `Bearer ${token}` } })
         if (!res.ok) return
         const list = await res.json()
         const myId = JSON.parse(localStorage.getItem('user') || '{}').id
@@ -592,7 +593,7 @@ export default function Dashboard({ onLogout }) {
     fetchStatuses()
     const statusInterval = setInterval(fetchStatuses, 10000)
 
-    const goOffline = () => fetch('/api/users/me/status', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: 'offline' }) }).catch(() => {})
+    const goOffline = () => fetch(apiUrl('/api/users/me/status'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: 'offline' }) }).catch(() => {})
     window.addEventListener('beforeunload', goOffline)
 
     // Auto-update: reload if a new version of the app is deployed (ETag on index.html changes)
@@ -664,14 +665,13 @@ export default function Dashboard({ onLogout }) {
 
     const connect = () => {
       if (destroyed) return
-      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      const ws = new WebSocket(`${proto}://${window.location.host}/ws/${uid}?token=${token}`)
+      const ws = new WebSocket(wsUrl(`/ws/${uid}?token=${token}`))
       wsRef.current = ws
 
       ws.onopen = () => {
         if (destroyed) { ws.close(); return }
         const t = localStorage.getItem('token')
-        fetch('/api/users/me/status', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }, body: JSON.stringify({ status: 'online' }) }).catch(() => {})
+        fetch(apiUrl('/api/users/me/status'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }, body: JSON.stringify({ status: 'online' }) }).catch(() => {})
         // Re-sync missed messages after any WS reconnect
         fetchMsgsRef.current?.()
         fetchRecentRef.current?.()
@@ -724,7 +724,7 @@ export default function Dashboard({ onLogout }) {
     // Full load on first open — replaces list once, then never again
     const initialLoad = async () => {
       try {
-        const res = await fetch(`/api/messages/conversation/${contactId}`, { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(apiUrl(`/api/messages/conversation/${contactId}`), { headers: { Authorization: `Bearer ${token}` } })
         if (!res.ok) return
         const data = await res.json()
         const serverMsgs = data.map(parseMsg)
@@ -757,7 +757,7 @@ export default function Dashboard({ onLogout }) {
       if (!initialDone) return
       const sinceId = lastMsgIdRef.current[contactId] || 0
       try {
-        const res = await fetch(`/api/messages/conversation/${contactId}?since_id=${sinceId}`, { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(apiUrl(`/api/messages/conversation/${contactId}?since_id=${sinceId}`), { headers: { Authorization: `Bearer ${token}` } })
         if (!res.ok) return
         const data = await res.json()
         if (!data.length) return // nothing new — no state update, no re-render
@@ -799,7 +799,7 @@ export default function Dashboard({ onLogout }) {
     const gKey = activeId
     const fetchGMsgs = async () => {
       try {
-        const res = await fetch(`/api/groups/${groupId}/messages`, { headers: { Authorization: `Bearer ${token}` } })
+        const res = await fetch(apiUrl(`/api/groups/${groupId}/messages`), { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const data = await res.json()
           const normalized = data.map(m => ({
@@ -1020,7 +1020,7 @@ export default function Dashboard({ onLogout }) {
     }))
     const token = localStorage.getItem('token')
     try {
-      await fetch(`/api/messages/read/${numId}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}` } })
+      await fetch(apiUrl(`/api/messages/read/${numId}`), { method: 'PUT', headers: { Authorization: `Bearer ${token}` } })
     } catch {}
   }
 
@@ -1041,7 +1041,7 @@ export default function Dashboard({ onLogout }) {
   const fetchCallLogs = async () => {
     const token = localStorage.getItem('token')
     try {
-      const res = await fetch('/api/call-logs', { headers: { Authorization: `Bearer ${token}` } })
+      const res = await fetch(apiUrl('/api/call-logs'), { headers: { Authorization: `Bearer ${token}` } })
       if (res.ok) setCallLogs(await res.json())
     } catch {}
   }
@@ -1049,7 +1049,7 @@ export default function Dashboard({ onLogout }) {
   const saveCallLog = async (logData) => {
     const token = localStorage.getItem('token')
     try {
-      await fetch('/api/call-logs', {
+      await fetch(apiUrl('/api/call-logs'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(logData),
@@ -1070,7 +1070,7 @@ export default function Dashboard({ onLogout }) {
       const phones = contacts.flatMap(c => c.tel || [])
       if (!phones.length) { setSyncingContacts(false); return }
       const token = localStorage.getItem('token')
-      const res = await fetch('/api/contacts/sync-phones', {
+      const res = await fetch(apiUrl('/api/contacts/sync-phones'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ phones }),
@@ -1122,7 +1122,7 @@ export default function Dashboard({ onLogout }) {
     // Re-fetch contacts so the newly saved person appears in the list immediately
     const token = localStorage.getItem('token')
     try {
-      const res = await fetch('/api/contacts', { headers: { Authorization: `Bearer ${token}` } })
+      const res = await fetch(apiUrl('/api/contacts'), { headers: { Authorization: `Bearer ${token}` } })
       if (res.ok) setSpvbContacts(await res.json())
     } catch {}
   }
@@ -1139,7 +1139,7 @@ export default function Dashboard({ onLogout }) {
     const prevMsgs = botMsgsRef.current.slice(-8).map(m => ({ role: m.sent ? 'user' : 'bot', text: m.text || '' }))
     if (newBotText) prevMsgs.push({ role: 'bot', text: newBotText })
     try {
-      const res = await fetch('/api/smart-reply', {
+      const res = await fetch(apiUrl('/api/smart-reply'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ messages: prevMsgs }),
@@ -1194,7 +1194,7 @@ export default function Dashboard({ onLogout }) {
     setLiveMessages(prev => ({ ...prev, [activeId]: [...(prev[activeId] || []), optimistic] }))
     setRecentConversations(prev => ({ ...prev, [activeId]: { lastMsg: text, time: nowTime(), fromMe: true } }))
     try {
-      const res = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content: text, room, recipient_id: activeId, reply_to: replySnap }) })
+      const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content: text, room, recipient_id: activeId, reply_to: replySnap }) })
       if (res.ok) {
         const serverMsg = await res.json()
         setLiveMessages(prev => ({
@@ -1233,7 +1233,7 @@ export default function Dashboard({ onLogout }) {
     }
     setLiveMessages(prev => ({ ...prev, [activeId]: [...(prev[activeId] || []), optimistic] }))
     try {
-      const res = await fetch('/api/messages/media', {
+      const res = await fetch(apiUrl('/api/messages/media'), {
         method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData,
       })
       if (res.ok) {
@@ -1355,7 +1355,7 @@ export default function Dashboard({ onLogout }) {
         formData.append('recipient_id', String(currentId))
         const optimistic = { id: Date.now(), text: '', created_at: new Date().toISOString(), media_url: url, media_type: 'audio', fileName: voiceFileName, sent: true, time: nowTime(), read: false, pending: true, from_user_id: myId }
         setLiveMessages(prev => ({ ...prev, [currentId]: [...(prev[currentId] || []), optimistic] }))
-        fetch('/api/messages/media', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
+        fetch(apiUrl('/api/messages/media'), { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
           .then(r => r.ok ? r.json() : null)
           .then(serverMsg => {
             if (!serverMsg) return
@@ -1396,7 +1396,7 @@ export default function Dashboard({ onLogout }) {
       const optimistic = { id: Date.now(), text: content, created_at: new Date().toISOString(), sent: true, time: nowTime(), read: false, pending: true, from_user_id: myId, replyTo: replySnap }
       setLiveMessages(prev => ({ ...prev, [activeId]: [...(prev[activeId] || []), optimistic] }))
       try {
-        const res = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content, room, recipient_id: activeId, reply_to: replySnap }) })
+        const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content, room, recipient_id: activeId, reply_to: replySnap }) })
         if (res.ok) {
           const s = await res.json()
           setLiveMessages(prev => ({ ...prev, [activeId]: (prev[activeId] || []).map(m => m.id === optimistic.id ? { ...m, id: s.id, pending: false } : m) }))
@@ -1464,7 +1464,7 @@ export default function Dashboard({ onLogout }) {
         const fd = new FormData()
         fd.append('file', file)
         fd.append('recipient_id', String(tid))
-        const res = await fetch('/api/messages/media', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd })
+        const res = await fetch(apiUrl('/api/messages/media'), { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd })
         if (res.ok) {
           const s = await res.json()
           setLiveMessages(prev => ({ ...prev, [tid]: (prev[tid] || []).map(m => m.id === optimistic.id ? { ...s, text: s.content || '', media_url: s.media_url, media_type: s.media_type, fileName: s.file_name, sent: true, time: nowTime(), read: false, pending: false, from_user_id: myId } : m) }))
@@ -1477,7 +1477,7 @@ export default function Dashboard({ onLogout }) {
       setLiveMessages(prev => ({ ...prev, [tid]: [...(prev[tid] || []), optimistic] }))
       setRecentConversations(prev => ({ ...prev, [tid]: { lastMsg: content, time: nowTime(), fromMe: true } }))
       try {
-        const res = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content, room, recipient_id: tid }) })
+        const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content, room, recipient_id: tid }) })
         if (res.ok) {
           const s = await res.json()
           setLiveMessages(prev => ({ ...prev, [tid]: (prev[tid] || []).map(m => m.id === optimistic.id ? { ...m, id: s.id, pending: false } : m) }))
@@ -1497,7 +1497,7 @@ export default function Dashboard({ onLogout }) {
     setLiveMessages(prev => ({ ...prev, [tid]: [...(prev[tid] || []), optimistic] }))
     setRecentConversations(prev => ({ ...prev, [tid]: { lastMsg: text, time: nowTime(), fromMe: true } }))
     try {
-      const res = await fetch('/api/messages', {
+      const res = await fetch(apiUrl('/api/messages'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ content: text, room, recipient_id: tid }),
@@ -1555,7 +1555,7 @@ export default function Dashboard({ onLogout }) {
   const saveContact = async (contactId) => {
     const token = localStorage.getItem('token')
     try {
-      await fetch(`/api/contacts/${contactId}/save`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+      await fetch(apiUrl(`/api/contacts/${contactId}/save`), { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
       setSavedContactIds(prev => {
         const next = new Set(prev)
         next.add(contactId)
@@ -1568,7 +1568,7 @@ export default function Dashboard({ onLogout }) {
   const unsaveContact = async (contactId) => {
     const token = localStorage.getItem('token')
     try {
-      await fetch(`/api/contacts/${contactId}/save`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+      await fetch(apiUrl(`/api/contacts/${contactId}/save`), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
       setSavedContactIds(prev => {
         const next = new Set(prev)
         next.delete(contactId)
@@ -1615,7 +1615,7 @@ export default function Dashboard({ onLogout }) {
         if (editAbout !== undefined) body.about = editAbout
         if (editPhone !== undefined) body.phone = editPhone
       }
-      const res = await fetch('/api/auth/me', { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
+      const res = await fetch(apiUrl('/api/auth/me'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
       if (res.ok) {
         const data = await res.json()
         const updated = { ...user, ...data.user }
@@ -1631,7 +1631,7 @@ export default function Dashboard({ onLogout }) {
     const formData = new FormData()
     formData.append('file', file)
     try {
-      const res = await fetch('/api/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
+      const res = await fetch(apiUrl('/api/upload'), { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
       if (res.ok) {
         const { url } = await res.json()
         await saveProfile({ cover_url: url }, false)
@@ -1644,7 +1644,7 @@ export default function Dashboard({ onLogout }) {
     const formData = new FormData()
     formData.append('file', file)
     try {
-      const res = await fetch('/api/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
+      const res = await fetch(apiUrl('/api/upload'), { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
       if (res.ok) {
         const { url } = await res.json()
         await saveProfile({ avatar_url: url }, false)
@@ -1656,21 +1656,21 @@ export default function Dashboard({ onLogout }) {
   const blockContact = async (contactId) => {
     const token = localStorage.getItem('token')
     setBlockedIds(prev => new Set([...prev, contactId]))
-    try { await fetch(`/api/contacts/${contactId}/block`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }) } catch {}
+    try { await fetch(apiUrl(`/api/contacts/${contactId}/block`), { method: 'POST', headers: { Authorization: `Bearer ${token}` } }) } catch {}
     setActiveId(null); setMobileShowChat(false)
   }
 
   const unblockContact = async (contactId) => {
     const token = localStorage.getItem('token')
     setBlockedIds(prev => { const n = new Set(prev); n.delete(contactId); return n })
-    try { await fetch(`/api/contacts/${contactId}/block`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }) } catch {}
+    try { await fetch(apiUrl(`/api/contacts/${contactId}/block`), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }) } catch {}
   }
 
   const saveNickname = async (contactId, nick) => {
     const token = localStorage.getItem('token')
     setNicknames(prev => ({ ...prev, [contactId]: nick }))
     try {
-      await fetch(`/api/contacts/${contactId}/nickname`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ nickname: nick }) })
+      await fetch(apiUrl(`/api/contacts/${contactId}/nickname`), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ nickname: nick }) })
     } catch {}
     setEditingNickname(null)
   }
@@ -1802,7 +1802,7 @@ export default function Dashboard({ onLogout }) {
     const token = localStorage.getItem('token')
     setQrStatus('generating')
     try {
-      const res = await fetch('/api/devices/qr/generate', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+      const res = await fetch(apiUrl('/api/devices/qr/generate'), { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
       if (!res.ok) throw new Error()
       const data = await res.json()
       setQrToken(data.token)
@@ -1826,7 +1826,7 @@ export default function Dashboard({ onLogout }) {
   const fetchLinkedDevices = async () => {
     const token = localStorage.getItem('token')
     try {
-      const res = await fetch('/api/devices', { headers: { Authorization: `Bearer ${token}` } })
+      const res = await fetch(apiUrl('/api/devices'), { headers: { Authorization: `Bearer ${token}` } })
       if (res.ok) setLinkedDevices(await res.json())
     } catch {}
   }
@@ -1836,7 +1836,7 @@ export default function Dashboard({ onLogout }) {
   const removeLinkedDevice = async (deviceId) => {
     const token = localStorage.getItem('token')
     try {
-      await fetch(`/api/devices/${deviceId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+      await fetch(apiUrl(`/api/devices/${deviceId}`), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
       setLinkedDevices(prev => prev.filter(d => d.id !== deviceId))
     } catch {}
   }
@@ -1844,7 +1844,7 @@ export default function Dashboard({ onLogout }) {
   const approveQrLink = async (token) => {
     const authToken = localStorage.getItem('token')
     try {
-      await fetch(`/api/devices/qr/${token}/approve`, { method: 'POST', headers: { Authorization: `Bearer ${authToken}` } })
+      await fetch(apiUrl(`/api/devices/qr/${token}/approve`), { method: 'POST', headers: { Authorization: `Bearer ${authToken}` } })
       setQrLinkRequest(null)
     } catch {}
   }
@@ -1852,7 +1852,7 @@ export default function Dashboard({ onLogout }) {
   const rejectQrLink = async (token) => {
     const authToken = localStorage.getItem('token')
     try {
-      await fetch(`/api/devices/qr/${token}/reject`, { method: 'POST', headers: { Authorization: `Bearer ${authToken}` } })
+      await fetch(apiUrl(`/api/devices/qr/${token}/reject`), { method: 'POST', headers: { Authorization: `Bearer ${authToken}` } })
       setQrLinkRequest(null)
     } catch {}
   }
@@ -1873,7 +1873,7 @@ export default function Dashboard({ onLogout }) {
     if (!newGroupName.trim() || newGroupMembers.length === 0) return
     const token = localStorage.getItem('token')
     try {
-      const res = await fetch('/api/groups', {
+      const res = await fetch(apiUrl('/api/groups'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ name: newGroupName.trim(), member_ids: newGroupMembers }),
@@ -1896,7 +1896,7 @@ export default function Dashboard({ onLogout }) {
     setGroupMessages(prev => ({ ...prev, [gKey]: [...(prev[gKey] || []), optimistic] }))
     setReplyTo(null)
     try {
-      const res = await fetch(`/api/groups/${gId}/messages`, {
+      const res = await fetch(apiUrl(`/api/groups/${gId}/messages`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ content: text }),
@@ -1915,7 +1915,7 @@ export default function Dashboard({ onLogout }) {
     const token = localStorage.getItem('token')
     setStatusUpdates(prev => prev.filter(s => s.id !== statusId))
     try {
-      await fetch(`/api/statuses/${statusId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+      await fetch(apiUrl(`/api/statuses/${statusId}`), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
     } catch {}
   }
 
@@ -1923,7 +1923,7 @@ export default function Dashboard({ onLogout }) {
     const token = localStorage.getItem('token')
     for (const id of statusIds) {
       try {
-        await fetch(`/api/statuses/${id}/view`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+        await fetch(apiUrl(`/api/statuses/${id}/view`), { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
       } catch {}
     }
     if (userId) {
@@ -1957,7 +1957,7 @@ export default function Dashboard({ onLogout }) {
       if (statusPostType === 'video' && statusVideoFile) {
         const formData = new FormData()
         formData.append('file', statusVideoFile)
-        const uploadRes = await fetch('/api/upload', {
+        const uploadRes = await fetch(apiUrl('/api/upload'), {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
           body: formData,
@@ -1979,7 +1979,7 @@ export default function Dashboard({ onLogout }) {
       }
       setStatusUpdates(prev => [optimistic, ...prev])
 
-      await fetch('/api/statuses', {
+      await fetch(apiUrl('/api/statuses'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ content: text || '', type: optimistic.type, color: chosenColor, video_url: serverVideoUrl }),
@@ -2131,7 +2131,7 @@ export default function Dashboard({ onLogout }) {
       }))
       if (isActiveChat) {
         const token = localStorage.getItem('token')
-        fetch(`/api/messages/read/${fromId}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}` } }).catch(() => {})
+        fetch(apiUrl(`/api/messages/read/${fromId}`), { method: 'PUT', headers: { Authorization: `Bearer ${token}` } }).catch(() => {})
       } else {
         setUnreadCounts(prev => ({ ...prev, [Number(fromId)]: (prev[Number(fromId)] || 0) + 1 }))
       }
