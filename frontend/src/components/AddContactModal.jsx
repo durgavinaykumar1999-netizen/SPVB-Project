@@ -1,3 +1,4 @@
+import { apiUrl } from '../utils/api'
 import { useState } from 'react'
 
 export default function AddContactModal({ onClose, onSaved, themeColor }) {
@@ -14,7 +15,7 @@ export default function AddContactModal({ onClose, onSaved, themeColor }) {
     setSearching(true); setError(''); setFound(null); setName('')
     try {
       const token = localStorage.getItem('token')
-      const res = await fetch(`/api/users/find-by-phone?phone=${encodeURIComponent(p)}`, {
+      const res = await fetch(apiUrl(`/api/users/find-by-phone?phone=${encodeURIComponent(p)}`), {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (res.ok) {
@@ -37,7 +38,7 @@ export default function AddContactModal({ onClose, onSaved, themeColor }) {
     setSaving(true)
     try {
       const token = localStorage.getItem('token')
-      await fetch(`/api/contacts/${found.id}/save`, {
+      await fetch(apiUrl(`/api/contacts/${found.id}/save`), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       })

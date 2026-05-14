@@ -1,3 +1,4 @@
+import { apiUrl } from '../utils/api'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -29,7 +30,7 @@ export default function SetPassword() {
     if (!/[!@#$%^&*(),.?":{}|<>]/.test(form.password)) { setError('Password needs at least one special character'); return }
     setLoading(true)
     try {
-      const res = await fetch('/api/auth/set-password', {
+      const res = await fetch(apiUrl('/api/auth/set-password'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ password: form.password, phone: digits }),

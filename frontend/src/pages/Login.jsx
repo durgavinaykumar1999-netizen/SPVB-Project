@@ -1,3 +1,4 @@
+import { apiUrl } from '../utils/api'
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { requestAllGooglePermissions, silentlyRefreshGoogleTokens } from '../utils/googleTokens'
@@ -36,7 +37,7 @@ export default function Login({ onLogin }) {
     setGoogleLoading(true)
     setError('')
     try {
-      const res = await fetch('/api/auth/google', {
+      const res = await fetch(apiUrl('/api/auth/google'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: response.credential }),
@@ -82,7 +83,7 @@ export default function Login({ onLogin }) {
     setError('')
     setLoading(true)
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(apiUrl('/api/auth/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ identifier: form.identifier, password: form.password }),
