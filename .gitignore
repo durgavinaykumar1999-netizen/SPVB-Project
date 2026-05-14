@@ -1,0 +1,26 @@
+# Python
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+*.log
+
+# Runtime data — never commit user data or secrets
+data/database.json
+data/database.json.bak
+data/database.json.tmp
+data/messages.db
+data/uploads/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code local config
+.claude/settings.local.json
