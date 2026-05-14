@@ -24,3 +24,8 @@ data/uploads/
 
 # Claude Code local config
 .claude/settings.local.json
+
+# Auto-generated / docs
+FEATURES.md
+README.md
+package-lock.json
