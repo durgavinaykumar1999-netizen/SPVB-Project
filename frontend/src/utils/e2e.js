@@ -119,7 +119,8 @@ export async function getOrCreateKeyPair({ fetchBackup, uploadBackup } = {}) {
       'jwk', JSON.parse(stored.publicKey),
       { name: 'ECDH', namedCurve: 'P-256' }, true, []
     )
-    return { privateKey, publicKey, publicKeyJwk: stored.publicKey }
+    // Return privateKeyJwk so Dashboard can upload backup for this existing key if needed
+    return { privateKey, publicKey, publicKeyJwk: stored.publicKey, privateKeyJwk: stored.privateKey }
   }
 
   // No local key — try restoring from encrypted server backup
@@ -135,7 +136,7 @@ export async function getOrCreateKeyPair({ fetchBackup, uploadBackup } = {}) {
         await dbSet('keypair', { privateKey: privKeyJwk, publicKey: pubJwk })
         const privateKey = await crypto.subtle.importKey('jwk', privJwkObj, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey'])
         const publicKey  = await crypto.subtle.importKey('jwk', pubJwkObj,  { name: 'ECDH', namedCurve: 'P-256' }, true, [])
-        return { privateKey, publicKey, publicKeyJwk: pubJwk }
+        return { privateKey, publicKey, publicKeyJwk: pubJwk, privateKeyJwk: privKeyJwk }
       }
     } catch { /* fall through to generate */ }
   }
@@ -153,7 +154,7 @@ export async function getOrCreateKeyPair({ fetchBackup, uploadBackup } = {}) {
     try { await uploadBackup(privJwk) } catch { /* non-fatal */ }
   }
 
-  return { privateKey: pair.privateKey, publicKey: pair.publicKey, publicKeyJwk: pubJwk }
+  return { privateKey: pair.privateKey, publicKey: pair.publicKey, publicKeyJwk: pubJwk, privateKeyJwk: privJwk }
 }
 
 /**

@@ -441,10 +441,25 @@ export default function Dashboard({ onLogout }) {
       })
     } : undefined
 
-    getOrCreateKeyPair({ fetchBackup, uploadBackup }).then(({ privateKey, publicKeyJwk }) => {
+    getOrCreateKeyPair({ fetchBackup, uploadBackup }).then(async ({ privateKey, publicKeyJwk, privateKeyJwk }) => {
       e2ePrivKeyRef.current = privateKey
       e2ePubKeyJwkRef.current = publicKeyJwk
       e2eReadyRef.current = true
+
+      // Upload backup for EXISTING keys too — runs once per device after first login post-update
+      // This ensures the key is on the server so other devices can restore it
+      if (uploadBackup && privateKeyJwk) {
+        try {
+          const chkRes = await fetch(apiUrl('/api/users/me/key-backup'), {
+            headers: { Authorization: `Bearer ${token}` }
+          })
+          if (chkRes.ok) {
+            const { backup } = await chkRes.json()
+            if (!backup) await uploadBackup(privateKeyJwk)
+          }
+        } catch { /* non-fatal */ }
+      }
+
       sessionStorage.removeItem('e2e_pw') // clear password from memory after use
       fetch(apiUrl('/api/users/me/pubkey'), {
         method: 'PUT',
