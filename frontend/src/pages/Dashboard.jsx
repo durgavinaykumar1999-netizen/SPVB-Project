@@ -558,50 +558,64 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
     const token = localStorage.getItem('token')
 
     const setup = async () => {
-      // Step 1: request notification permission (works on HTTP too — needed for SW showNotification)
+      // Step 1: request notification permission
       const perm = await Notification.requestPermission()
       if (perm !== 'granted') return
 
-      // Step 2: Web Push subscription — requires HTTPS (or localhost for testing)
+      // Step 2: Web Push — HTTPS only
       const isSecure = location.protocol === 'https:' || location.hostname === 'localhost'
       if (!isSecure || !('serviceWorker' in navigator) || !('PushManager' in window)) return
 
       try {
-        // Wait for SW to be fully active
+        // Force SW to check for updates so new SW version activates immediately
         const reg = await navigator.serviceWorker.ready
+        reg.update().catch(() => {})
 
         const keyRes = await fetch(apiUrl('/api/push/vapid-public-key'))
         if (!keyRes.ok) return
         const { publicKey } = await keyRes.json()
         if (!publicKey) return
 
-        // Convert base64url VAPID public key → Uint8Array
-        const raw = atob(publicKey.replace(/-/g, '+').replace(/_/g, '/'))
-        const vapidKey = Uint8Array.from(raw, c => c.charCodeAt(0))
+        // Correct base64url → Uint8Array (must add padding or atob fails on Android)
+        const b64 = (publicKey + '='.repeat((4 - publicKey.length % 4) % 4))
+          .replace(/-/g, '+').replace(/_/g, '/')
+        const vapidKey = Uint8Array.from(atob(b64), c => c.charCodeAt(0))
 
-        // Get or create push subscription
+        // Always get-or-create subscription, then ALWAYS re-register with backend
+        // (handles SW update, DB wipe, subscription expiry, device reinstall)
         let sub = await reg.pushManager.getSubscription()
         if (!sub) {
-          sub = await reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: vapidKey,
-          })
+          sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey })
+        } else {
+          // Verify subscription key matches current VAPID — re-subscribe if different
+          try {
+            const subKey = btoa(String.fromCharCode(...new Uint8Array(sub.options?.applicationServerKey || [])))
+              .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+            if (subKey && publicKey && !publicKey.startsWith(subKey.slice(0, 10))) {
+              await sub.unsubscribe()
+              sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey })
+            }
+          } catch { /* keep existing sub */ }
         }
 
-        // Register subscription with backend
-        const subJson = sub.toJSON()
+        // Always register with backend (idempotent upsert on server)
         await fetch(apiUrl('/api/push/subscribe'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(subJson),
+          body: JSON.stringify(sub.toJSON()),
+          keepalive: true,
         })
-        console.log('[Push] subscribed OK, endpoint:', sub.endpoint.slice(0, 50) + '…')
+        console.log('[Push] registered OK:', sub.endpoint.slice(0, 55) + '…')
       } catch (err) {
-        console.warn('[Push] subscription failed:', err)
+        console.warn('[Push] setup failed:', err.message)
       }
     }
 
     setup()
+    // Re-run on every visibility change back to visible (catches PWA resume from background)
+    const onVisible = () => { if (!document.hidden) setup() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
   }, [user?.id])
 
   // Listen for SW postMessage — handles notification clicks, call alerts, push events

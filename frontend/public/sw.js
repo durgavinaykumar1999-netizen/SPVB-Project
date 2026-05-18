@@ -1,5 +1,5 @@
-const CACHE = 'spvb-v5'
-const STATIC = ['/', '/index.html', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png', '/manifest.json']
+const CACHE = 'spvb-v6'
+const STATIC = ['/', '/index.html', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png', '/manifest.json', '/sw.js']
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(STATIC)).then(() => self.skipWaiting()))
@@ -72,14 +72,11 @@ self.addEventListener('push', e => {
     // ── Regular message notification ──
     e.waitUntil(
       self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
-        // If app is visible and focused, just ping it — no OS notification needed
-        const focused = clients.find(c => c.visibilityState === 'visible' && c.focused)
-        if (focused) {
-          focused.postMessage({ type: 'PUSH_MSG', from: fromId, body: payload.body })
-          return // page will handle sound itself
-        }
-        // App in background or closed — show OS notification + message app tab
+        // Always ping open tabs so they can update UI / play in-app sound
         clients.forEach(c => c.postMessage({ type: 'PUSH_MSG', from: fromId, body: payload.body }))
+
+        // Always show OS notification — Android PWA needs this even when app is "visible"
+        // because visibility APIs are unreliable on mobile PWAs in background/lock screen
         return self.registration.showNotification(payload.title || 'SPVB', {
           body: payload.body || 'New message',
           icon: '/icon-192.png',

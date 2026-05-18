@@ -363,7 +363,7 @@ export default function CallScreen({ call, wsRef, onEnd }) {
           boxShadow: '0 4px 24px rgba(0,0,0,0.6)', zIndex: 10,
         }}>
           <video ref={localVideoRef} autoPlay playsInline muted
-            style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: videoOff ? 0 : 1 }} />
+            style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: videoOff ? 0 : 1, transform: 'scaleX(-1)' }} />
           {videoOff && (
             <div style={{ position: 'absolute', inset: 0, background: '#1a2535', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="1.5">
