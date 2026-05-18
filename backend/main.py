@@ -27,6 +27,55 @@ import random as _random
 
 load_dotenv()
 
+# ── Cloudinary Setup ──────────────────────────────────────
+import cloudinary
+import cloudinary.uploader
+
+_CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "")
+_cloudinary_enabled = bool(_CLOUDINARY_URL)
+if _cloudinary_enabled:
+    cloudinary.config(cloudinary_url=_CLOUDINARY_URL)
+
+# File size limits (bytes)
+LIMIT_IMAGE = 10 * 1024 * 1024   # 10 MB
+LIMIT_VIDEO = 50 * 1024 * 1024   # 50 MB
+LIMIT_AUDIO = 16 * 1024 * 1024   # 16 MB
+LIMIT_DOC   = 25 * 1024 * 1024   # 25 MB
+
+def _upload_media(data: bytes, ext: str, media_type: str, folder: str = "spvb") -> str:
+    """Upload bytes to Cloudinary if configured, else save locally. Returns URL."""
+    if _cloudinary_enabled:
+        rtype = "video" if media_type in ("video", "audio") else "raw" if media_type == "document" else "image"
+        result = cloudinary.uploader.upload(data, folder=folder, resource_type=rtype)
+        return result["secure_url"]
+    # Fallback: local disk
+    filename = f"{folder.replace('/', '_')}_{int(datetime.now().timestamp())}{ext}"
+    dest = UPLOADS_DIR / filename
+    dest.write_bytes(data)
+    return f"/uploads/{filename}"
+
+_CLOUDINARY_HOST = "res.cloudinary.com"
+
+def _cloudinary_delete(url: str):
+    """Delete a Cloudinary asset by its secure URL. Skips profile/avatar folders."""
+    if not _cloudinary_enabled or not url or _CLOUDINARY_HOST not in url:
+        return
+    try:
+        # Never delete profile images
+        if "/spvb/profiles/" in url or "/spvb/avatars/" in url:
+            return
+        # Extract public_id: everything between /upload/[v.../] and the extension
+        import re as _re
+        m = _re.search(r"/upload/(?:v\d+/)?(.+?)(?:\.[^.]+)?$", url)
+        if not m:
+            return
+        public_id = m.group(1)
+        # Determine resource type from URL path
+        rtype = "video" if "/video/" in url else "raw" if "/raw/" in url else "image"
+        cloudinary.uploader.destroy(public_id, resource_type=rtype)
+    except Exception as e:
+        print(f"[cloudinary] delete error: {e}")
+
 # ── MongoDB Setup ─────────────────────────────────────────
 def _fix_mongo_uri(uri: str) -> str:
     """URL-encode special characters in MongoDB URI username/password."""
@@ -73,6 +122,7 @@ col_blocked        = mdb["blocked"]
 col_qr_tokens      = mdb["qr_tokens"]
 col_linked_devices = mdb["linked_devices"]
 col_password_reset = mdb["password_reset_tokens"]
+col_push_subs      = mdb["push_subscriptions"]   # web push subscriptions
 
 # Indexes
 col_users.create_index("id", unique=True)
@@ -397,8 +447,8 @@ def _purge_orphan_uploads():
         referenced = set()
         for u in mdb_get_users():
             for field in ("avatar_url", "cover_url"):
-                url = u.get(field, "")
-                if url and url.startswith("/uploads/"):
+                url = u.get(field, "") or ""
+                if url.startswith("/uploads/"):
                     referenced.add(url[len("/uploads/"):])
         for url in db_media_urls():
             if url and url.startswith("/uploads/"):
@@ -422,12 +472,24 @@ async def _periodic_cleanup():
     await asyncio.sleep(5)
     while True:
         try:
+            now_iso = datetime.utcnow().isoformat()
+            # Delete Cloudinary media for expired statuses (24h) before removing DB records
+            expired_statuses = list(col_statuses.find({"expires_at": {"$lt": now_iso}}))
+            for s in expired_statuses:
+                _cloudinary_delete(s.get("video_url", ""))
             mdb_cleanup_expired_statuses()
-            col_messages.delete_many({"expires_at": {"$lt": datetime.utcnow().isoformat()}})
-            col_call_logs.delete_many({"expires_at": {"$lt": datetime.utcnow().isoformat()}})
-            col_group_messages.delete_many({"expires_at": {"$lt": datetime.utcnow().isoformat()}})
+            # Delete Cloudinary chat/group media for expired messages
+            expired_msgs = list(col_messages.find({"expires_at": {"$lt": now_iso}, "media_url": {"$exists": True, "$ne": ""}}))
+            for m in expired_msgs:
+                _cloudinary_delete(m.get("media_url", ""))
+            col_messages.delete_many({"expires_at": {"$lt": now_iso}})
+            expired_grp = list(col_group_messages.find({"expires_at": {"$lt": now_iso}, "media_url": {"$exists": True, "$ne": ""}}))
+            for m in expired_grp:
+                _cloudinary_delete(m.get("media_url", ""))
+            col_group_messages.delete_many({"expires_at": {"$lt": now_iso}})
+            col_call_logs.delete_many({"expires_at": {"$lt": now_iso}})
             mdb_delete_expired_qr()
-            col_password_reset.delete_many({"expires_at": {"$lt": datetime.utcnow().isoformat()}})
+            col_password_reset.delete_many({"expires_at": {"$lt": now_iso}})
             _purge_orphan_uploads()
         except Exception as e:
             print(f"[cleanup] Error: {e}")
@@ -466,14 +528,90 @@ class WSManager:
             except Exception:
                 self.disconnect(str(user_id))
 
+    def is_connected(self, user_id: str) -> bool:
+        return str(user_id) in self.connections
+
 ws_manager = WSManager()
 
-UPLOADS_DIR = Path("../data/uploads")
+# ── Web Push (VAPID) ──────────────────────────────────────
+_VAPID_PUBLIC_KEY  = os.getenv("VAPID_PUBLIC_KEY", "")
+_VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
+_VAPID_EMAIL       = os.getenv("VAPID_EMAIL", "mailto:admin@spvb.com")
+_push_enabled      = bool(_VAPID_PUBLIC_KEY and _VAPID_PRIVATE_KEY)
+
+# Pre-generate PEM once at startup using cryptography library (more reliable than manual wrapping)
+_VAPID_PEM = None
+if _push_enabled:
+    try:
+        import base64 as _b64
+        from cryptography.hazmat.primitives.serialization import (
+            load_der_private_key, Encoding, PrivateFormat, NoEncryption
+        )
+        _der = _b64.b64decode(_VAPID_PRIVATE_KEY)
+        _pk  = load_der_private_key(_der, password=None)
+        _VAPID_PEM = _pk.private_bytes(Encoding.PEM, PrivateFormat.TraditionalOpenSSL, NoEncryption()).decode()
+        print(f"[push] enabled, email={_VAPID_EMAIL}")
+    except Exception as _e:
+        print(f"[push] key load failed: {_e} — falling back to raw PEM wrap")
+        import textwrap as _tw
+        _VAPID_PEM = (
+            "-----BEGIN EC PRIVATE KEY-----\n"
+            + "\n".join(_tw.wrap(_VAPID_PRIVATE_KEY, 64))
+            + "\n-----END EC PRIVATE KEY-----\n"
+        )
+else:
+    print("[push] disabled — VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set in .env")
+
+def _send_push(user_id: int, title: str, body: str, data: dict = None):
+    """Send a web push notification to all subscriptions of user_id."""
+    if not _push_enabled or not _VAPID_PEM:
+        return
+    subs = list(col_push_subs.find({"user_id": user_id}, {"_id": 0}))
+    if not subs:
+        print(f"[push] no subscriptions for user_id={user_id}")
+        return
+    from pywebpush import webpush
+    payload = json.dumps({
+        "title": title,
+        "body":  body,
+        "data":  data or {},
+    })
+    print(f"[push] → user={user_id} subs={len(subs)} title={title!r}")
+    for sub in subs:
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": sub["endpoint"],
+                    "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+                },
+                data=payload,
+                vapid_private_key=_VAPID_PEM,
+                vapid_claims={"sub": _VAPID_EMAIL},
+                ttl=86400,
+                content_encoding="aes128gcm",
+            )
+            print(f"[push] OK {sub['endpoint'][:55]}…")
+        except Exception as e:
+            print(f"[push] FAIL {sub['endpoint'][:40]}… → {e}")
+            if "410" in str(e) or "404" in str(e):
+                col_push_subs.delete_one({"endpoint": sub["endpoint"]})
+
+UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "../data/uploads"))
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Allow configured origins + all Vercel preview URLs
+_ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "")
+if _ALLOWED_ORIGINS:
+    _origins = [o.strip() for o in _ALLOWED_ORIGINS.split(",")]
+    _origin_regex = r"https://.*\.vercel\.app"
+else:
+    _origins = ["*"]
+    _origin_regex = None
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
+    allow_origin_regex=_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -685,6 +823,62 @@ def get_pubkey(user_id: int, cu: dict = Depends(get_current_user)):
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
     return {"pubkey": u.get("pubkey", ""), "user_id": user_id}
+
+# ── E2E Key Backup (encrypted with user's password via PBKDF2) ────────────
+
+@app.put("/users/me/key-backup")
+def set_key_backup(body: dict, cu: dict = Depends(get_current_user)):
+    """Store the user's ECDH private key encrypted with their password (PBKDF2+AES-GCM)."""
+    backup = body.get("backup", "")
+    if not backup:
+        raise HTTPException(status_code=400, detail="backup required")
+    mdb_update_user(cu["user_id"], {"e2e_key_backup": backup})
+    return {"ok": True}
+
+@app.get("/users/me/key-backup")
+def get_key_backup(cu: dict = Depends(get_current_user)):
+    """Retrieve the user's encrypted ECDH private key backup."""
+    u = mdb_get_user_by_id(cu["user_id"])
+    return {"backup": u.get("e2e_key_backup", "") if u else ""}
+
+# ── Push Notifications ────────────────────────────────────
+
+@app.get("/push/vapid-public-key")
+def get_vapid_public_key():
+    return {"publicKey": _VAPID_PUBLIC_KEY}
+
+@app.post("/push/subscribe")
+def push_subscribe(body: dict, cu: dict = Depends(get_current_user)):
+    endpoint = body.get("endpoint", "")
+    p256dh   = body.get("keys", {}).get("p256dh", "")
+    auth     = body.get("keys", {}).get("auth", "")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="endpoint required")
+    col_push_subs.update_one(
+        {"endpoint": endpoint},
+        {"$set": {"user_id": cu["user_id"], "endpoint": endpoint, "p256dh": p256dh, "auth": auth}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+@app.delete("/push/subscribe")
+def push_unsubscribe(body: dict, cu: dict = Depends(get_current_user)):
+    endpoint = body.get("endpoint", "")
+    if endpoint:
+        col_push_subs.delete_one({"endpoint": endpoint, "user_id": cu["user_id"]})
+    return {"ok": True}
+
+@app.post("/push/test")
+def push_test(cu: dict = Depends(get_current_user)):
+    """Fire a test push notification to the calling user (for debugging)."""
+    name = cu.get("display_name") or cu.get("username", "You")
+    threading.Thread(
+        target=_send_push,
+        args=(cu["user_id"], "SPVB 🔔 Test", f"Push is working, {name}!", {"test": True}),
+        daemon=True,
+    ).start()
+    subs = col_push_subs.count_documents({"user_id": cu["user_id"]})
+    return {"ok": True, "subscriptions": subs, "push_enabled": _push_enabled}
 
 # ── Health ────────────────────────────────────────────────
 
@@ -963,9 +1157,14 @@ def update_me(body: dict, cu: dict = Depends(get_current_user)):
         fields["cover_url"] = str(body["cover_url"])[:500]
     if "avatar_url" in body:
         fields["avatar_url"] = str(body["avatar_url"])[:500]
+    if "msg_retention_days" in body:
+        days = int(body["msg_retention_days"])
+        if days not in (1, 3, 7, 14, 30, 0):  # 0 = never delete
+            raise HTTPException(status_code=400, detail="Invalid retention value")
+        fields["msg_retention_days"] = days
     mdb_update_user(cu["user_id"], fields)
     u.update(fields)
-    return {"ok": True, "user": {"id": u["id"], "username": u["username"], "email": u["email"], "phone": u.get("phone", ""), "role": u.get("role", "user"), "display_name": u.get("display_name", u["username"]), "avatar_url": u.get("avatar_url", ""), "cover_url": u.get("cover_url", ""), "about": u.get("about", "")}}
+    return {"ok": True, "user": {"id": u["id"], "username": u["username"], "email": u["email"], "phone": u.get("phone", ""), "role": u.get("role", "user"), "display_name": u.get("display_name", u["username"]), "avatar_url": u.get("avatar_url", ""), "cover_url": u.get("cover_url", ""), "about": u.get("about", ""), "msg_retention_days": u.get("msg_retention_days", 0)}}
 
 # ── Messages ──────────────────────────────────────────────
 
@@ -1076,6 +1275,9 @@ def admin_stats(cu: dict = Depends(get_current_user)):
 @app.post("/messages")
 async def create_message(msg: MessageRequest, cu: dict = Depends(get_current_user)):
     _now = datetime.utcnow()
+    _user = mdb_get_user_by_id(cu["user_id"]) or {}
+    _days = _user.get("msg_retention_days", 0)
+    _expires = (_now + timedelta(days=_days)).isoformat() + "Z" if _days else "9999-12-31T23:59:59Z"
     message = {
         "from_user_id": cu["user_id"],
         "from_username": cu.get("username", ""),
@@ -1086,12 +1288,31 @@ async def create_message(msg: MessageRequest, cu: dict = Depends(get_current_use
         "reply_to": msg.reply_to or None,
         "is_read": False,
         "created_at": _now.isoformat() + "Z",
-        "expires_at": (_now + timedelta(hours=24)).isoformat() + "Z",
+        "expires_at": _expires,
     }
     message = db_save_message(message)
     if msg.recipient_id:
         await ws_manager.send(str(msg.recipient_id), {"type": "chat_message", "message": message})
+        # Always send push so background tabs/mobile/PWA get notified
+        sender_name = cu.get("display_name") or cu.get("username", "Someone")
+        preview = "[Media]" if not msg.content else (msg.content[:60] if not msg.content.startswith("__e2e__|") else "🔒 Encrypted message")
+        threading.Thread(target=_send_push, args=(msg.recipient_id, sender_name, preview, {"from": cu["user_id"]}), daemon=True).start()
     return message
+
+@app.delete("/messages/{message_id}")
+async def delete_message(message_id: int, cu: dict = Depends(get_current_user)):
+    my_id = cu["user_id"]
+    msg = col_messages.find_one({"id": message_id})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg.get("from_user_id") != my_id:
+        raise HTTPException(status_code=403, detail="Cannot delete another user's message")
+    col_messages.delete_one({"id": message_id})
+    # Notify recipient via WebSocket
+    recipient_id = msg.get("recipient_id")
+    if recipient_id:
+        await ws_manager.send(str(recipient_id), {"type": "message_deleted", "message_id": message_id})
+    return {"ok": True}
 
 @app.get("/messages/{room}")
 def get_messages(room: str, cu: dict = Depends(get_current_user)):
@@ -1099,17 +1320,35 @@ def get_messages(room: str, cu: dict = Depends(get_current_user)):
 
 # ── Upload ────────────────────────────────────────────────
 
+_IMG_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+_VID_EXTS = {'.mp4', '.mov', '.mkv', '.avi', '.wmv'}
+_AUD_EXTS = {'.webm', '.ogg', '.mp3', '.m4a', '.wav', '.aac'}
+_DOC_EXTS = {'.pdf', '.doc', '.docx', '.txt', '.xlsx', '.xls', '.pptx', '.ppt', '.zip', '.rar', '.csv'}
+_SIZE_MAP  = {"image": LIMIT_IMAGE, "video": LIMIT_VIDEO, "audio": LIMIT_AUDIO, "document": LIMIT_DOC}
+_SIZE_LABEL = {"image": "10 MB", "video": "50 MB", "audio": "16 MB", "document": "25 MB"}
+
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...), cu: dict = Depends(get_current_user)):
-    ext = Path(file.filename).suffix.lower() if file.filename else '.mp4'
-    allowed = {'.mp4', '.webm', '.mov', '.ogg', '.mkv', '.jpg', '.jpeg', '.png', '.gif', '.webp'}
-    if ext not in allowed:
+async def upload_file(
+    file: UploadFile = File(...),
+    type: str = "avatar",
+    cu: dict = Depends(get_current_user)
+):
+    ext = Path(file.filename or "").suffix.lower() or ".jpg"
+    all_exts = _IMG_EXTS | _VID_EXTS | _AUD_EXTS
+    if ext not in all_exts:
         raise HTTPException(status_code=400, detail="Invalid file type")
-    filename = f"{cu['user_id']}_{int(datetime.now().timestamp())}{ext}"
-    dest = UPLOADS_DIR / filename
-    with dest.open('wb') as f:
-        shutil.copyfileobj(file.file, f)
-    return {"url": f"/uploads/{filename}"}
+    mtype = "image" if ext in _IMG_EXTS else "video" if ext in _VID_EXTS else "audio"
+    data = await file.read()
+    if len(data) > _SIZE_MAP[mtype]:
+        raise HTTPException(status_code=413, detail=f"File too large. Max size for {mtype}s is {_SIZE_LABEL[mtype]}.")
+    # Route to different Cloudinary folders based on type
+    # spvb/profiles/ → never deleted  |  spvb/statuses/ → deleted after 24h
+    if type == "status":
+        folder = f"spvb/statuses/{cu['user_id']}"
+    else:
+        folder = f"spvb/profiles/{cu['user_id']}"
+    url = _upload_media(data, ext, mtype, folder=folder)
+    return {"url": url}
 
 @app.post("/messages/media")
 async def send_media_message(
@@ -1118,20 +1357,15 @@ async def send_media_message(
     caption: str = Form(""),
     cu: dict = Depends(get_current_user)
 ):
-    ext = Path(file.filename).suffix.lower() if file.filename else '.jpg'
-    img_exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
-    vid_exts = {'.mp4', '.mov', '.mkv'}
-    aud_exts = {'.webm', '.ogg', '.mp3', '.m4a', '.wav', '.aac'}
-    doc_exts = {'.pdf', '.doc', '.docx', '.txt', '.xlsx', '.xls', '.pptx', '.ppt', '.zip', '.rar', '.csv'}
-    allowed = img_exts | vid_exts | aud_exts | doc_exts
-    if ext not in allowed:
+    ext = Path(file.filename or "").suffix.lower() or ".jpg"
+    all_exts = _IMG_EXTS | _VID_EXTS | _AUD_EXTS | _DOC_EXTS
+    if ext not in all_exts:
         raise HTTPException(status_code=400, detail="Invalid file type")
-    media_type = "image" if ext in img_exts else "video" if ext in vid_exts else "audio" if ext in aud_exts else "document"
-    filename = f"msg_{cu['user_id']}_{int(datetime.now().timestamp())}{ext}"
-    dest = UPLOADS_DIR / filename
-    with dest.open('wb') as f:
-        shutil.copyfileobj(file.file, f)
-    media_url = f"/uploads/{filename}"
+    media_type = "image" if ext in _IMG_EXTS else "video" if ext in _VID_EXTS else "audio" if ext in _AUD_EXTS else "document"
+    data = await file.read()
+    if len(data) > _SIZE_MAP[media_type]:
+        raise HTTPException(status_code=413, detail=f"File too large. Max size for {media_type}s is {_SIZE_LABEL[media_type]}.")
+    media_url = _upload_media(data, ext, media_type, folder=f"spvb/chat/{cu['user_id']}")
     _now = datetime.utcnow()
     my_id = cu["user_id"]
     room = f"dm_{min(my_id, recipient_id)}_{max(my_id, recipient_id)}"
@@ -1147,7 +1381,7 @@ async def send_media_message(
         "encrypted": False,
         "is_read": False,
         "created_at": _now.isoformat() + "Z",
-        "expires_at": (_now + timedelta(hours=24)).isoformat() + "Z",
+        "expires_at": (_now + timedelta(days=(mdb_get_user_by_id(my_id) or {}).get("msg_retention_days", 0) or 36500)).isoformat() + "Z",
     }
     message = db_save_message(message)
     await ws_manager.send(str(recipient_id), {"type": "chat_message", "message": message})
@@ -1357,10 +1591,19 @@ def update_user(user_id: int, user: User, cu: dict = Depends(get_current_user)):
 
 @app.delete("/users/{user_id}")
 def delete_user(user_id: int, cu: dict = Depends(get_current_user)):
-    if cu.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    # Allow self-deletion or admin deletion
+    if cu.get("role") != "admin" and cu.get("user_id") != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    # Delete all user data
+    col_messages.delete_many({"$or": [{"from_user_id": user_id}, {"recipient_id": user_id}]})
+    col_group_messages.delete_many({"from_user_id": user_id})
+    col_statuses.delete_many({"user_id": user_id})
+    col_call_logs.delete_many({"$or": [{"user_id": user_id}, {"contact_id": user_id}]})
+    col_saved_contacts.delete_many({"user_id": str(user_id)})
+    col_linked_devices.delete_many({"user_id": user_id})
+    col_user_status.delete_many({"user_id": str(user_id)})
     mdb_delete_user(user_id)
-    return {"message": "User deleted"}
+    return {"message": "Account deleted"}
 
 # ── Items CRUD ────────────────────────────────────────────
 
@@ -1554,16 +1797,17 @@ async def send_group_media(group_id: int, file: UploadFile = File(...), cu: dict
     if not group or my_id not in group.get("members", []):
         raise HTTPException(status_code=403, detail="Not a member")
     ext = Path(file.filename or "file").suffix.lower() or ".bin"
-    fname = f"grp_{group_id}_{my_id}_{int(time.time())}{ext}"
-    fpath = UPLOADS_DIR / fname
-    with open(fpath, "wb") as f_out:
-        f_out.write(await file.read())
-    url = f"/uploads/{fname}"
-    ct = file.content_type or ""
-    mtype = "image" if ct.startswith("image/") else "video" if ct.startswith("video/") else "audio" if ct.startswith("audio/") else "document"
+    mtype = "image" if ext in _IMG_EXTS else "video" if ext in _VID_EXTS else "audio" if ext in _AUD_EXTS else "document"
+    data = await file.read()
+    if len(data) > _SIZE_MAP.get(mtype, LIMIT_DOC):
+        raise HTTPException(status_code=413, detail=f"File too large. Max size for {mtype}s is {_SIZE_LABEL.get(mtype, '25 MB')}.")
+    url = _upload_media(data, ext, mtype, folder=f"spvb/groups/{group_id}")
+    _sender = mdb_get_user_by_id(my_id) or {}
+    _days = _sender.get("msg_retention_days", 0)
     user_map = {u["id"]: u for u in mdb_get_users()}
     now = datetime.utcnow()
-    msg = {"group_id": group_id, "from_user_id": my_id, "content": "", "media_url": url, "media_type": mtype, "file_name": file.filename, "reply_to": None, "created_at": now.isoformat() + "Z", "expires_at": (now + timedelta(hours=24)).isoformat() + "Z"}
+    _expires = (now + timedelta(days=_days)).isoformat() + "Z" if _days else "9999-12-31T23:59:59Z"
+    msg = {"group_id": group_id, "from_user_id": my_id, "content": "", "media_url": url, "media_type": mtype, "file_name": file.filename, "reply_to": None, "created_at": now.isoformat() + "Z", "expires_at": _expires}
     msg = mdb_save_group_message(msg)
     sender_name = user_map[my_id].get("display_name", user_map[my_id]["username"]) if my_id in user_map else str(my_id)
     sender_avatar = user_map[my_id].get("avatar_url", "") if my_id in user_map else ""

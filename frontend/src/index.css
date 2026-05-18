@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Nunito:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap');
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -837,6 +837,12 @@ body {
   to   { transform: translateX(0); opacity: 1; }
 }
 
+/* In-app toast notification */
+@keyframes slideInRight {
+  from { transform: translateX(110%); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+
 /* ── Mobile Responsive ──────────────────────────────── */
 @media (max-width: 768px) {
   body { overflow: auto; }
@@ -1158,3 +1164,39 @@ body {
   .admin-sidebar { display: none; }
   .admin-content { flex: 1; }
 }
+
+/* ─── Light Mode Overrides ───────────────────────────── */
+:root[data-theme="light"] .wa-app { background: #f0f2f5; }
+:root[data-theme="light"] .wa-sidebar { background: #ffffff; border-right-color: rgba(0,0,0,0.08); }
+:root[data-theme="light"] .wa-sidebar-header { background: #f0f2f5; }
+:root[data-theme="light"] .wa-search { background: #f0f2f5; }
+:root[data-theme="light"] .wa-search-wrap input { background: #ffffff; color: #111b21; border: 1px solid rgba(0,0,0,0.08); }
+:root[data-theme="light"] .wa-search-wrap input::placeholder { color: #667781; }
+:root[data-theme="light"] .wa-icon-btn { color: #54656f; }
+:root[data-theme="light"] .wa-icon-btn:hover { background: #f0f2f5; color: #111b21; }
+:root[data-theme="light"] .wa-chat-item:hover { background: #f5f6f6; }
+:root[data-theme="light"] .wa-chat-item.active { background: #f0f2f5; }
+:root[data-theme="light"] .wa-chat-name { color: #111b21; }
+:root[data-theme="light"] .wa-chat-last { color: #667781; }
+:root[data-theme="light"] .wa-chat-time { color: #667781; }
+:root[data-theme="light"] .wa-chat-header { background: #f0f2f5; }
+:root[data-theme="light"] .wa-chat-header-info .name { color: #111b21; }
+:root[data-theme="light"] .wa-chat-header-info .status { color: #667781; }
+:root[data-theme="light"] .wa-messages {
+  background: #efeae2;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400' opacity='0.04'%3E%3Ctext y='50' font-size='30'%3E💬%3C/text%3E%3C/svg%3E");
+  scrollbar-color: #ccd0d3 transparent;
+}
+:root[data-theme="light"] .wa-messages::-webkit-scrollbar-thumb { background: #ccd0d3; }
+:root[data-theme="light"] .sent .wa-bubble { background: #d9fdd3; }
+:root[data-theme="light"] .recv .wa-bubble { background: #ffffff; box-shadow: 0 1px 1px rgba(0,0,0,0.08); }
+:root[data-theme="light"] .wa-bubble-text { color: #111b21; }
+:root[data-theme="light"] .wa-bubble-time { color: #667781; }
+:root[data-theme="light"] .wa-date-divider span { background: #d2ddd5; color: #54656f; }
+:root[data-theme="light"] .wa-input-bar { background: #f0f2f5; border-top-color: rgba(0,0,0,0.06); }
+:root[data-theme="light"] .wa-input-wrap { background: #ffffff; border: 1px solid rgba(0,0,0,0.08); }
+:root[data-theme="light"] .wa-input-wrap input { color: #111b21; }
+:root[data-theme="light"] .wa-input-wrap input::placeholder { color: #667781; }
+:root[data-theme="light"] .wa-typing { background: #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+:root[data-theme="light"] .wa-online-dot { border-color: #ffffff; }
+:root[data-theme="light"] body { background: #f0f2f5; }

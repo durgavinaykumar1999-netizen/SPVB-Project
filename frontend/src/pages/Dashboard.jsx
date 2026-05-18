@@ -7,6 +7,7 @@ import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { silentlyRefreshGoogleTokens, syncContactsWithToken, isGmailTokenValid, storeGmailToken, requestAllGooglePermissions } from '../utils/googleTokens'
 import { wsUrl, apiUrl } from '../utils/api'
+import { getOrCreateKeyPair, encryptMessage, decryptMessage, exportKeyBackup, importKeyBackup } from '../utils/e2e'
 import CallScreen from '../components/CallScreen'
 import IncomingCallBanner from '../components/IncomingCallBanner'
 import AddContactModal from '../components/AddContactModal'
@@ -50,6 +51,7 @@ function extractBody(payload) {
 
 const AVATAR_COLORS = ['#25d366','#128c7e','#f39c12','#8e44ad','#2980b9','#e74c3c','#16a085','#d35400','#2c3e50','#6c5ce7']
 const BOT_CONTACT = { id: 'bot', name: 'AI Assistant', initials: 'AI', color: '#6c5ce7', about: 'SPVB smart assistant', isGroup: false }
+const SELF_CHAT_ID = '__self__'
 const EMOJI_CATS = [
   { id: 'smileys', icon: '😀', emojis: ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','🙃','😉','😊','😇','🥰','😍','🤩','😘','😗','😚','😙','🥲','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🤫','🤔','🤐','🤨','😐','😑','😶','😏','😒','🙄','😬','🤥','😌','😔','😪','🤤','😴','😷','🤒','🤕','🤢','🤮','🤧','🥵','🥶','🥴','😵','🤯','🤠','🥸','🥳','😎','🤓','🧐','😕','😟','🙁','☹️','😮','😯','😲','😳','🥺','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤','😡','😠','🤬','😈','👿','💀','☠️','💩','🤡','👹','👺','👻','👽','👾','🤖'] },
   { id: 'people', icon: '👋', emojis: ['👋','🤚','🖐️','✋','🖖','👌','✌️','🤞','🤟','🤘','🤙','👈','👉','👆','👇','☝️','👍','👎','✊','👊','🤛','🤜','👏','🙌','👐','🤲','🤝','🙏','✍️','💅','💪','👶','🧒','👦','👧','🧑','👱','👨','🧔','👩','🧓','👴','👵','👮','🕵️','💂','🥷','👷','🤴','👸','👳','👲','🧕','🤵','👰','🧙','🧚','🧛','🧜','🧝','🧞','🧟','🏃','💃','🕺','🧗','🏋️','🤼','🤸','🏄','🚵','🚴','🧘'] },
@@ -219,6 +221,7 @@ export default function Dashboard({ onLogout }) {
   const [showSettings, setShowSettings] = useState(false)
   const [settingsPage, setSettingsPage] = useState(null) // null|'account'|'chats'|'notifications'|'privacy'|'help'|'devices'
   const [onlineMap, setOnlineMap] = useState({})
+  const lastSeenRef = useRef({}) // tracks last time each user was seen online (locally observed)
   const [showStatusModal, setShowStatusModal] = useState(false)
   const [myStatus, setMyStatus] = useState('')
   const [statusUpdates, setStatusUpdates] = useState([]) // my own statuses (local + backend)
@@ -230,6 +233,9 @@ export default function Dashboard({ onLogout }) {
   const [showContactInfo, setShowContactInfo] = useState(false)
   const [replyTo, setReplyTo] = useState(null) // { id, text, sent, media_url, media_type, fileName }
   const [hoveredMsgId, setHoveredMsgId] = useState(null)
+  const [msgMenuId, setMsgMenuId] = useState(null) // which message has dropdown open
+  const [msgMenuPos, setMsgMenuPos] = useState({ x: 0, y: 0 }) // fixed position for dropdown
+  const [deleteConfirmMsg, setDeleteConfirmMsg] = useState(null) // message pending delete confirmation
   const [showAttachMenu, setShowAttachMenu] = useState(false)
   const [locationLoading, setLocationLoading] = useState(false)
   const [showContactPicker, setShowContactPicker] = useState(false)
@@ -241,10 +247,27 @@ export default function Dashboard({ onLogout }) {
   const [syncingContacts, setSyncingContacts] = useState(false)
   const [syncMsg, setSyncMsg] = useState('')
 
+  /* ── E2E Encryption ── */
+  const e2ePrivKeyRef = useRef(null)   // my ECDH private CryptoKey
+  const e2ePubKeyJwkRef = useRef(null) // my public key JWK string (uploaded to server)
+  const contactPubKeysRef = useRef({}) // { userId: jwkString } — their public keys
+  const e2eReadyRef = useRef(false)    // true once key pair loaded from IndexedDB
+  const liveMessagesRef = useRef({})   // mirrors liveMessages for sync access in async callbacks
+
+  /* ── Typing indicators ── */
+  const [typingUsers, setTypingUsers] = useState({}) // { userId: true }
+  const typingTimersRef = useRef({})
+  const typingThrottleRef = useRef(null)
+
+  /* ── Dark / Light mode + fonts ── */
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('dark_mode') !== 'light')
+  const [appFont, setAppFont] = useState(() => localStorage.getItem('app_font') || 'default')
+
   /* ── Profile edit ── */
   const [editName, setEditName] = useState('')
   const [editAbout, setEditAbout] = useState('')
   const [editPhone, setEditPhone] = useState('')
+  const [editRetention, setEditRetention] = useState(0)
   const [editSaving, setEditSaving] = useState(false)
   const [showQuickProfile, setShowQuickProfile] = useState(false)
   const [editingNickname, setEditingNickname] = useState(null)
@@ -270,12 +293,39 @@ export default function Dashboard({ onLogout }) {
   const [googleConnecting, setGoogleConnecting] = useState(false)
   const [googleConnectDone, setGoogleConnectDone] = useState(() => isGoogleUser())
 
+  /* ── In-app toast notification ── */
+  const [inAppToast, setInAppToast] = useState(null) // { name, text, contactId, color }
+  const toastTimerRef = useRef(null)
+  const pendingToastsRef = useRef([]) // toasts that arrived while page was hidden
+
   /* ── Settings toggles ── */
   const [notifSound, setNotifSound] = useState(() => localStorage.getItem('notif_sound') !== 'off')
+  const notifSoundRef = useRef(localStorage.getItem('notif_sound') !== 'off')
   const [showLastSeen, setShowLastSeen] = useState(() => localStorage.getItem('show_last_seen') !== 'off')
   const [readReceipts, setReadReceipts] = useState(() => localStorage.getItem('read_receipts') !== 'off')
   const [chatTheme, setChatTheme] = useState(() => localStorage.getItem('chat_theme') || 'green')
-  const THEMES = { green: '#00a884', blue: '#4285f4', purple: '#7c4dff', orange: '#f39c12' }
+  const THEMES = {
+    green: '#00a884', blue: '#4285f4', purple: '#7c4dff', orange: '#f39c12',
+    teal: '#00bcd4', rose: '#e91e63', amber: '#ff9800', indigo: '#3f51b5',
+    emerald: '#10b981', crimson: '#dc2626',
+  }
+  const PREMIUM_THEMES = [
+    { id: 'whatsapp', label: 'WhatsApp', gradient: 'linear-gradient(135deg, #00a884 0%, #25d366 100%)', accent: '#00a884' },
+    { id: 'telegram', label: 'Telegram', gradient: 'linear-gradient(135deg, #2196f3 0%, #0d8ecf 100%)', accent: '#2196f3' },
+    { id: 'instagram', label: 'Instagram', gradient: 'linear-gradient(135deg, #833ab4 0%, #fd1d1d 50%, #fcb045 100%)', accent: '#fd1d1d' },
+    { id: 'midnight', label: 'Midnight', gradient: 'linear-gradient(135deg, #141e30 0%, #243b55 100%)', accent: '#6c63ff' },
+    { id: 'aurora', label: 'Aurora', gradient: 'linear-gradient(135deg, #00c9ff 0%, #92fe9d 100%)', accent: '#00c9ff' },
+    { id: 'sunset', label: 'Sunset', gradient: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', accent: '#f5576c' },
+    { id: 'ocean', label: 'Ocean', gradient: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', accent: '#667eea' },
+    { id: 'forest', label: 'Forest', gradient: 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)', accent: '#11998e' },
+  ]
+  const APP_FONTS = [
+    { id: 'default', label: 'Default', family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" },
+    { id: 'rounded', label: 'Rounded', family: "'Nunito', 'Varela Round', sans-serif" },
+    { id: 'mono', label: 'Mono', family: "'Fira Code', 'Courier New', monospace" },
+    { id: 'serif', label: 'Serif', family: "'Georgia', 'Times New Roman', serif" },
+    { id: 'modern', label: 'Modern', family: "'Inter', 'Roboto', sans-serif" },
+  ]
 
   // Per-chat themes (color + font, keyed by contactId, stored locally per user)
   const [chatThemes, setChatThemes] = useState(() => {
@@ -360,7 +410,202 @@ export default function Dashboard({ onLogout }) {
   const spvbContactsRef = useRef([])
   const activeIdRef = useRef(null)
 
-  const themeColor = THEMES[chatTheme] || THEMES.green
+  const themeColor = THEMES[chatTheme] || PREMIUM_THEMES.find(t => t.id === chatTheme)?.accent || THEMES.green
+
+  /* ── E2E key init — generate/load key pair and upload public key ── */
+  useEffect(() => {
+    if (!user?.id) return
+    const token = localStorage.getItem('token')
+    const pw = sessionStorage.getItem('e2e_pw')
+    const userId = user.id
+
+    // Backup callbacks: fetch/upload encrypted private key from server so other devices can restore
+    const fetchBackup = pw ? async () => {
+      try {
+        const res = await fetch(apiUrl('/api/users/me/key-backup'), {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        if (!res.ok) return null
+        const { backup } = await res.json()
+        if (!backup) return null
+        return await importKeyBackup(backup, pw, userId) // returns decrypted privKeyJwk or throws
+      } catch { return null }
+    } : undefined
+
+    const uploadBackup = pw ? async (privKeyJwk) => {
+      const backup = await exportKeyBackup(privKeyJwk, pw, userId)
+      await fetch(apiUrl('/api/users/me/key-backup'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ backup }),
+      })
+    } : undefined
+
+    getOrCreateKeyPair({ fetchBackup, uploadBackup }).then(({ privateKey, publicKeyJwk }) => {
+      e2ePrivKeyRef.current = privateKey
+      e2ePubKeyJwkRef.current = publicKeyJwk
+      e2eReadyRef.current = true
+      sessionStorage.removeItem('e2e_pw') // clear password from memory after use
+      fetch(apiUrl('/api/users/me/pubkey'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ pubkey: publicKeyJwk }),
+      }).catch(() => {})
+      // Re-decrypt any messages that loaded before keys were ready
+      setTimeout(() => decryptAllPending(privateKey), 0)
+    }).catch(() => {})
+  }, [user?.id])
+
+  // Wait until E2E key pair is ready (max 5s)
+  const waitForE2eKey = () => new Promise(resolve => {
+    if (e2eReadyRef.current) { resolve(); return }
+    let waited = 0
+    const t = setInterval(() => {
+      waited += 50
+      if (e2eReadyRef.current || waited >= 5000) { clearInterval(t); resolve() }
+    }, 50)
+  })
+
+  // Decrypt all already-loaded messages that still contain raw cipher text
+  const decryptAllPending = async (privKey) => {
+    const key = privKey || e2ePrivKeyRef.current
+    if (!key) return
+    const snapshot = liveMessagesRef.current
+    for (const [contactId, msgs] of Object.entries(snapshot)) {
+      if (!msgs.some(m => String(m.text || '').startsWith('__e2e__|'))) continue
+      const theirPub = await getContactPubKey(contactId)
+      const decrypted = await Promise.all(msgs.map(async m => {
+        if (!String(m.text || '').startsWith('__e2e__|')) return m
+        const plain = await decryptMessage(m.text, key, theirPub)
+        return { ...m, text: plain }
+      }))
+      setLiveMessages(p => ({ ...p, [contactId]: decrypted }))
+    }
+  }
+
+  /* ── Notification permission + push subscription ── */
+  useEffect(() => {
+    if (!user?.id || !('Notification' in window)) return
+    const token = localStorage.getItem('token')
+
+    const setup = async () => {
+      // Step 1: request notification permission (works on HTTP too — needed for SW showNotification)
+      const perm = await Notification.requestPermission()
+      if (perm !== 'granted') return
+
+      // Step 2: Web Push subscription — requires HTTPS (or localhost for testing)
+      const isSecure = location.protocol === 'https:' || location.hostname === 'localhost'
+      if (!isSecure || !('serviceWorker' in navigator) || !('PushManager' in window)) return
+
+      try {
+        // Wait for SW to be fully active
+        const reg = await navigator.serviceWorker.ready
+
+        const keyRes = await fetch(apiUrl('/api/push/vapid-public-key'))
+        if (!keyRes.ok) return
+        const { publicKey } = await keyRes.json()
+        if (!publicKey) return
+
+        // Convert base64url VAPID public key → Uint8Array
+        const raw = atob(publicKey.replace(/-/g, '+').replace(/_/g, '/'))
+        const vapidKey = Uint8Array.from(raw, c => c.charCodeAt(0))
+
+        // Get or create push subscription
+        let sub = await reg.pushManager.getSubscription()
+        if (!sub) {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: vapidKey,
+          })
+        }
+
+        // Register subscription with backend
+        const subJson = sub.toJSON()
+        await fetch(apiUrl('/api/push/subscribe'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(subJson),
+        })
+        console.log('[Push] subscribed OK, endpoint:', sub.endpoint.slice(0, 50) + '…')
+      } catch (err) {
+        console.warn('[Push] subscription failed:', err)
+      }
+    }
+
+    setup()
+  }, [user?.id])
+
+  // Listen for SW postMessage (notification click → open specific chat)
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    const handler = (e) => {
+      if (e.data?.type === 'OPEN_CHAT' && e.data.contactId) {
+        setActiveId(Number(e.data.contactId) || e.data.contactId)
+      }
+    }
+    navigator.serviceWorker.addEventListener('message', handler)
+    return () => navigator.serviceWorker.removeEventListener('message', handler)
+  }, [])
+
+  // Open chat from URL param (e.g. /?chat=123 from push click on new tab)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const chatId = params.get('chat')
+    if (chatId && user?.id) {
+      setActiveId(Number(chatId) || chatId)
+      window.history.replaceState({}, '', '/')
+    }
+  }, [user?.id])
+
+  // Fetch a contact's public key (cached in ref)
+  const getContactPubKey = async (contactId) => {
+    const cid = String(contactId)
+    if (contactPubKeysRef.current[cid]) return contactPubKeysRef.current[cid]
+    try {
+      const token = localStorage.getItem('token')
+      const res = await fetch(apiUrl(`/api/users/${cid}/pubkey`), { headers: { Authorization: `Bearer ${token}` } })
+      if (res.ok) {
+        const { pubkey } = await res.json()
+        if (pubkey) { contactPubKeysRef.current[cid] = pubkey; return pubkey }
+      }
+    } catch {}
+    return null
+  }
+
+  /* ── Dark mode + font CSS variables ── */
+  useEffect(() => {
+    const root = document.documentElement
+    if (darkMode) {
+      root.style.setProperty('--bg-app', '#111b21')
+      root.style.setProperty('--bg-sidebar', '#111b21')
+      root.style.setProperty('--bg-chat', '#0b141a')
+      root.style.setProperty('--bg-bubble-sent', '#005c4b')
+      root.style.setProperty('--bg-bubble-recv', '#202c33')
+      root.style.setProperty('--bg-input', '#2a3942')
+      root.style.setProperty('--bg-header', '#202c33')
+      root.style.setProperty('--text-primary', '#e9edef')
+      root.style.setProperty('--text-secondary', '#8696a0')
+      root.style.setProperty('--border-color', 'rgba(134,150,160,0.1)')
+      root.style.setProperty('--hover-color', '#2a3942')
+      root.setAttribute('data-theme', 'dark')
+    } else {
+      root.style.setProperty('--bg-app', '#f0f2f5')
+      root.style.setProperty('--bg-sidebar', '#ffffff')
+      root.style.setProperty('--bg-chat', '#efeae2')
+      root.style.setProperty('--bg-bubble-sent', '#d9fdd3')
+      root.style.setProperty('--bg-bubble-recv', '#ffffff')
+      root.style.setProperty('--bg-input', '#ffffff')
+      root.style.setProperty('--bg-header', '#f0f2f5')
+      root.style.setProperty('--text-primary', '#111b21')
+      root.style.setProperty('--text-secondary', '#667781')
+      root.style.setProperty('--border-color', 'rgba(0,0,0,0.1)')
+      root.style.setProperty('--hover-color', '#f5f6f6')
+      root.setAttribute('data-theme', 'light')
+    }
+    const fontFamily = APP_FONTS.find(f => f.id === appFont)?.family || APP_FONTS[0].family
+    root.style.setProperty('--app-font', fontFamily)
+    document.body.style.fontFamily = `var(--app-font)`
+  }, [darkMode, appFont])
 
   /* ── Auth + heartbeat + load contacts ── */
   useEffect(() => {
@@ -521,8 +766,14 @@ export default function Dashboard({ onLogout }) {
         beat()
         pollOnline()
         syncWithRetry()
-      } else {
-        fetch(apiUrl('/api/users/me/status'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: 'offline' }) }).catch(() => {})
+        // Show the most recent queued toast from while we were away
+        if (pendingToastsRef.current.length > 0) {
+          const latest = pendingToastsRef.current[pendingToastsRef.current.length - 1]
+          pendingToastsRef.current = []
+          if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+          setInAppToast(latest)
+          toastTimerRef.current = setTimeout(() => setInAppToast(null), 5000)
+        }
       }
     }
     document.addEventListener('visibilitychange', onVisible)
@@ -538,7 +789,15 @@ export default function Dashboard({ onLogout }) {
     const pollOnline = async () => {
       try {
         const res = await fetch(apiUrl('/api/users/online'), { headers: { Authorization: `Bearer ${token}` } })
-        if (res.ok) setOnlineMap(await res.json())
+        if (res.ok) {
+          const data = await res.json()
+          // Record the exact moment we observed each user as online
+          const now = new Date().toISOString()
+          for (const [uid, info] of Object.entries(data)) {
+            if (info.online_status === 'online') lastSeenRef.current[uid] = now
+          }
+          setOnlineMap(data)
+        }
       } catch (_) {}
     }
     pollOnline()
@@ -632,8 +891,24 @@ export default function Dashboard({ onLogout }) {
   // Keep refs fresh
   useEffect(() => { spvbContactsRef.current = spvbContacts }, [spvbContacts])
   useEffect(() => { activeIdRef.current = activeId }, [activeId])
+  useEffect(() => { notifSoundRef.current = notifSound }, [notifSound])
+
+  // Update page title + PWA home-screen icon badge whenever unread count changes
+  useEffect(() => {
+    const total = Object.values(unreadCounts).reduce((s, v) => s + (v || 0), 0)
+    document.title = total > 0 ? `(${total}) SPVB Chat` : 'SPVB Chat'
+    try {
+      if ('setAppBadge' in navigator) {
+        if (total > 0) navigator.setAppBadge(total)
+        else navigator.clearAppBadge()
+      }
+    } catch {}
+  }, [unreadCounts])
 
   // Persist messages to localStorage so chat survives page refresh
+  // Keep liveMessagesRef in sync so async callbacks can read current state
+  useEffect(() => { liveMessagesRef.current = liveMessages }, [liveMessages])
+
   useEffect(() => {
     if (!user?.id) return
     try {
@@ -697,19 +972,21 @@ export default function Dashboard({ onLogout }) {
   /* ── Live message polling for active DM ── */
   const lastMsgIdRef = useRef({}) // contactId -> last confirmed server message id
   useEffect(() => {
-    if (!activeId || activeId === 'bot' || typeof activeId !== 'number' || !user?.id) {
+    if (!activeId || activeId === 'bot' || (typeof activeId !== 'number' && activeId !== SELF_CHAT_ID) || !user?.id) {
       fetchMsgsRef.current = null
       return
     }
     const token = localStorage.getItem('token')
     const myId = user.id
-    const contactId = activeId
+    // For self-chat, use myId as the contact for the API call
+    const contactId = activeId === SELF_CHAT_ID ? myId : activeId
     let initialDone = false
 
     const parseMsg = (m) => {
       const ts = m.created_at?.endsWith('Z') ? m.created_at : m.created_at + 'Z'
       return {
-        id: m.id, text: m.content,
+        id: m.id, text: m.content, // text may be encrypted; decrypted below
+        _encrypted: String(m.content || '').startsWith('__e2e__|'),
         created_at: ts,
         media_url: m.media_url || null, media_type: m.media_type || null, fileName: m.file_name || null,
         replyTo: m.reply_to || null,
@@ -721,19 +998,34 @@ export default function Dashboard({ onLogout }) {
       }
     }
 
+    // Decrypt any encrypted messages in a batch — waits for keys to be ready first
+    const decryptBatch = async (msgs) => {
+      await waitForE2eKey()
+      const key = e2ePrivKeyRef.current
+      if (!key) return msgs  // keys never loaded; return as-is (render guard covers display)
+      const theirPub = await getContactPubKey(contactId)
+      return Promise.all(msgs.map(async (m) => {
+        if (!m._encrypted) return m
+        const plain = await decryptMessage(m.text, key, theirPub)
+        return { ...m, text: plain, _encrypted: false }
+      }))
+    }
+
+    // stateKey: where messages are stored in liveMessages (SELF_CHAT_ID for self, contactId otherwise)
+    const stateKey = activeId === SELF_CHAT_ID ? SELF_CHAT_ID : contactId
+
     // Full load on first open — replaces list once, then never again
     const initialLoad = async () => {
       try {
         const res = await fetch(apiUrl(`/api/messages/conversation/${contactId}`), { headers: { Authorization: `Bearer ${token}` } })
         if (!res.ok) return
         const data = await res.json()
-        const serverMsgs = data.map(parseMsg)
-        const maxId = serverMsgs.reduce((acc, m) => Math.max(acc, m.id || 0), lastMsgIdRef.current[contactId] || 0)
-        lastMsgIdRef.current[contactId] = maxId
+        const serverMsgs = await decryptBatch(data.map(parseMsg))
+        const maxId = serverMsgs.reduce((acc, m) => Math.max(acc, m.id || 0), lastMsgIdRef.current[stateKey] || 0)
+        lastMsgIdRef.current[stateKey] = maxId
         setLiveMessages(prev => {
-          const existing = prev[contactId] || []
+          const existing = prev[stateKey] || []
           const existingById = new Map(existing.map(m => [m.id, m]))
-          // Reuse references for unchanged messages, replace only what changed
           const merged = serverMsgs.map(sm => {
             const local = existingById.get(sm.id)
             if (!local) return sm
@@ -746,36 +1038,36 @@ export default function Dashboard({ onLogout }) {
           const pendingMsgs = existing.filter(em => em.pending && !serverIds.has(em.id))
           const newList = [...merged, ...pendingMsgs]
           if (newList.length === existing.length && newList.every((m, i) => m === existing[i])) return prev
-          return { ...prev, [contactId]: newList }
+          return { ...prev, [stateKey]: newList }
         })
         initialDone = true
+        if (e2ePrivKeyRef.current) decryptAllPending(e2ePrivKeyRef.current)
       } catch (_) {}
     }
 
     // Incremental poll — only fetches messages newer than lastMsgId, appends only
     const pollNewMsgs = async () => {
       if (!initialDone) return
-      const sinceId = lastMsgIdRef.current[contactId] || 0
+      const sinceId = lastMsgIdRef.current[stateKey] || 0
       try {
         const res = await fetch(apiUrl(`/api/messages/conversation/${contactId}?since_id=${sinceId}`), { headers: { Authorization: `Bearer ${token}` } })
         if (!res.ok) return
         const data = await res.json()
-        if (!data.length) return // nothing new — no state update, no re-render
-        const newMsgs = data.map(parseMsg)
+        if (!data.length) return
+        const newMsgs = await decryptBatch(data.map(parseMsg))
         const maxId = newMsgs.reduce((acc, m) => Math.max(acc, m.id || 0), sinceId)
-        lastMsgIdRef.current[contactId] = maxId
+        lastMsgIdRef.current[stateKey] = maxId
         setLiveMessages(prev => {
-          const existing = prev[contactId] || []
+          const existing = prev[stateKey] || []
           const existingIds = new Set(existing.map(m => m.id))
           const toAdd = newMsgs.filter(m => !existingIds.has(m.id))
           if (!toAdd.length) return prev
-          // Replace any pending duplicate (same text+sender within 10s)
           const _now = Date.now()
           const withoutDups = existing.filter(em => {
             if (!em.pending) return true
             return !toAdd.some(nm => nm.from_user_id === em.from_user_id && nm.text === em.text && (_now - new Date(em.created_at).getTime()) < 10000)
           })
-          return { ...prev, [contactId]: [...withoutDups, ...toAdd] }
+          return { ...prev, [stateKey]: [...withoutDups, ...toAdd] }
         })
       } catch (_) {}
     }
@@ -928,7 +1220,7 @@ export default function Dashboard({ onLogout }) {
         avatar_url: saved ? c.avatar_url : '',
         isGroup: false, isSpvb: true, isSaved: saved,
         _realName: realName,
-        lastMsg: liveMessages[c.id]?.slice(-1)[0]?.text ?? recentConversations[c.id]?.lastMsg ?? 'Tap to start chatting',
+        lastMsg: (() => { const t = liveMessages[c.id]?.slice(-1)[0]?.text ?? recentConversations[c.id]?.lastMsg ?? 'Tap to start chatting'; return (String(t).startsWith('__e2e__|') || String(t).startsWith('e2e__|')) ? '🔒 Encrypted message' : t })(),
         time: liveMessages[c.id]?.slice(-1)[0]?.time ?? recentConversations[c.id]?.time ?? '',
         unread: unreadCounts[Number(c.id)] || unreadCounts[c.id] || 0,
       }
@@ -950,6 +1242,26 @@ export default function Dashboard({ onLogout }) {
     return { ...BOT_CONTACT, lastMsg: last?.text ?? '👋 Say Hi!', time: last?.time ?? '', unread: 0 }
   }, [botMsgs])
 
+  // Self-chat: pinned entry showing the user's own profile
+  const selfContact = useMemo(() => {
+    const myName = user?.display_name || user?.username || 'Me'
+    const initials = myName.charAt(0).toUpperCase()
+    const selfMsgs = liveMessages[SELF_CHAT_ID] || []
+    const last = selfMsgs.slice(-1)[0]
+    return {
+      id: SELF_CHAT_ID,
+      name: myName + ' (You)',
+      initials,
+      color: AVATAR_COLORS[(user?.id || 0) % AVATAR_COLORS.length],
+      avatar_url: user?.avatar_url || '',
+      lastMsg: last?.text ?? '📌 Tap to add notes',
+      time: last?.time ?? '',
+      unread: 0,
+      isSelf: true,
+      isGroup: false,
+    }
+  }, [user, liveMessages])
+
   // Group contacts for chat list
   const groupContacts = useMemo(() => groups.map(g => ({
     id: `g_${g.id}`,
@@ -965,9 +1277,9 @@ export default function Dashboard({ onLogout }) {
     unread: 0,
   })), [groups])
 
-  const activeContact = [...allContacts, botContact, ...groupContacts].find(c => c.id === activeId)
+  const activeContact = [...allContacts, botContact, selfContact, ...groupContacts].find(c => c.id === activeId)
   const isGroupChat = typeof activeId === 'string' && activeId.startsWith('g_')
-  const chatMsgs = activeId === 'bot' ? botMsgs : isGroupChat ? (groupMessages[activeId] || []) : (liveMessages[activeId] || [])
+  const chatMsgs = activeId === 'bot' ? botMsgs : activeId === SELF_CHAT_ID ? (liveMessages[SELF_CHAT_ID] || []) : isGroupChat ? (groupMessages[activeId] || []) : (liveMessages[activeId] || [])
   const filteredContacts = allContacts.filter(c => {
     if (c.isInvite) return true
     if (blockedIds.has(c.id)) return false
@@ -982,19 +1294,23 @@ export default function Dashboard({ onLogout }) {
   const getContactStatus = (c) => {
     if (!c) return { label: '', isOnline: false }
     if (c.id === 'bot') return { label: botTyping ? 'typing...' : 'SPVB AI • always online', isOnline: true }
+    if (c.id === SELF_CHAT_ID) return { label: 'Your personal notes', isOnline: true }
     if (c.isGroup) return { label: `${c.members?.length || 0} members`, isOnline: true }
     if (c.isInvite) return { label: c.email, isOnline: false }
     const live = onlineMap[String(c.id)]
     const status = live?.online_status || c.online_status
-    const lastSeen = live?.updated_at || c.last_seen
     if (status === 'online') return { label: 'online', isOnline: true }
-    if (status === 'away') return { label: 'last seen recently', isOnline: false }
+    // Use the locally-observed last-online time (accurate to last poll) over the stale DB timestamp
+    const localLastSeen = lastSeenRef.current[String(c.id)]
+    const lastSeen = localLastSeen || live?.updated_at || c.last_seen
     if (lastSeen) {
       try {
         const d = new Date(lastSeen)
         const now = new Date()
+        const diffMs = now - d
         let lsStr
-        if (d.toDateString() === now.toDateString()) lsStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        if (diffMs < 60000) lsStr = 'just now'
+        else if (d.toDateString() === now.toDateString()) lsStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         else lsStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' at ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         return { label: `last seen ${lsStr}`, isOnline: false }
       } catch {}
@@ -1027,7 +1343,7 @@ export default function Dashboard({ onLogout }) {
   const selectChat = (id) => {
     // Always allow navigation — lock overlay handles access restriction
     setLockOverlayPinDigits([])
-    setActiveId(id); setShowEmoji(false); setMobileShowChat(true); setShowContactInfo(false); setReplyTo(null); setShowAttachMenu(false)
+    setActiveId(id); setShowEmoji(false); setMobileShowChat(true); setShowContactInfo(false); setReplyTo(null); setShowAttachMenu(false); setMsgMenuId(null)
     if (typeof id === 'number' && lockedChats.has(String(id)) && !chatUnlocked.has(String(id))) return // Don't mark read or focus input yet
     markRead(id)
     setTimeout(() => inputRef.current?.focus(), 50)
@@ -1156,6 +1472,21 @@ export default function Dashboard({ onLogout }) {
     setSmartRepliesLoading(false)
   }, [])
 
+  // Shared helper: encrypt plaintext for a recipient — always returns encrypted content
+  const encryptForRecipient = async (plaintext, recipientId) => {
+    await waitForE2eKey()
+    const key = e2ePrivKeyRef.current
+    if (!key) return { content: plaintext, encrypted: false } // keys not available (offline/error)
+    const theirPub = await getContactPubKey(recipientId)
+    if (!theirPub) return { content: plaintext, encrypted: false } // contact has no key yet
+    try {
+      const content = await encryptMessage(plaintext, key, theirPub)
+      return { content, encrypted: true }
+    } catch {
+      return { content: plaintext, encrypted: false } // encryption failed — send plain rather than lose msg
+    }
+  }
+
   const sendMessage = useCallback(async () => {
     const text = input.trim()
     if (!text || !activeId) return
@@ -1183,6 +1514,32 @@ export default function Dashboard({ onLogout }) {
       return
     }
 
+    // Self-chat (Notes to self)
+    if (activeId === SELF_CHAT_ID) {
+      const myId = user?.id
+      if (!myId) return
+      const token = localStorage.getItem('token')
+      const replySnap = replyTo ? { ...replyTo } : null
+      setReplyTo(null)
+      const localId = Date.now()
+      const optimistic = { id: localId, text, created_at: new Date().toISOString(), sent: true, time: nowTime(), read: true, pending: true, from_user_id: myId, replyTo: replySnap }
+      setLiveMessages(prev => ({ ...prev, [SELF_CHAT_ID]: [...(prev[SELF_CHAT_ID] || []), optimistic] }))
+      try {
+        const room = `dm_${myId}_${myId}`
+        const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content: text, room, recipient_id: myId, encrypted: false }) })
+        if (res.ok) {
+          const serverMsg = await res.json()
+          setLiveMessages(prev => ({
+            ...prev,
+            [SELF_CHAT_ID]: (prev[SELF_CHAT_ID] || []).map(m =>
+              m.id === localId ? { ...m, id: serverMsg.id, pending: false } : m
+            )
+          }))
+        }
+      } catch (_) {}
+      return
+    }
+
     if (typeof activeId !== 'number') return
     const token = localStorage.getItem('token')
     const myId = user?.id
@@ -1190,11 +1547,13 @@ export default function Dashboard({ onLogout }) {
     const replySnap = replyTo ? { ...replyTo } : null
     setReplyTo(null)
     const localId = Date.now()
+    // Show plain text locally, send encrypted to server
     const optimistic = { id: localId, text, created_at: new Date().toISOString(), sent: true, time: nowTime(), read: false, pending: true, from_user_id: myId, replyTo: replySnap }
     setLiveMessages(prev => ({ ...prev, [activeId]: [...(prev[activeId] || []), optimistic] }))
     setRecentConversations(prev => ({ ...prev, [activeId]: { lastMsg: text, time: nowTime(), fromMe: true } }))
     try {
-      const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content: text, room, recipient_id: activeId, reply_to: replySnap }) })
+      const { content: encryptedContent, encrypted: isEncrypted } = await encryptForRecipient(text, activeId)
+      const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content: encryptedContent, room, recipient_id: activeId, reply_to: replySnap, encrypted: isEncrypted }) })
       if (res.ok) {
         const serverMsg = await res.json()
         setLiveMessages(prev => ({
@@ -1211,17 +1570,24 @@ export default function Dashboard({ onLogout }) {
 
   const handleKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() } }
 
+  const FILE_LIMITS = { image: 10, video: 50, audio: 16, document: 25 }
   const sendMedia = useCallback(async (file) => {
     if (!file || typeof activeId !== 'number') return
     const token = localStorage.getItem('token')
     const myId = user?.id
+    const isImage = file.type.startsWith('image/')
+    const isVideo = file.type.startsWith('video/')
+    const isAudio = file.type.startsWith('audio/')
+    const mediaType = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'document'
+    const limitMB = FILE_LIMITS[mediaType]
+    if (file.size > limitMB * 1024 * 1024) {
+      alert(`File too large. Maximum size for ${mediaType}s is ${limitMB} MB.`)
+      return
+    }
     const formData = new FormData()
     formData.append('file', file)
     formData.append('recipient_id', String(activeId))
     const objectUrl = URL.createObjectURL(file)
-    const isImage = file.type.startsWith('image/')
-    const isVideo = file.type.startsWith('video/')
-    const mediaType = isImage ? 'image' : isVideo ? 'video' : 'document'
     const replySnap = replyTo ? { ...replyTo } : null
     setReplyTo(null)
     const optimistic = {
@@ -1396,7 +1762,8 @@ export default function Dashboard({ onLogout }) {
       const optimistic = { id: Date.now(), text: content, created_at: new Date().toISOString(), sent: true, time: nowTime(), read: false, pending: true, from_user_id: myId, replyTo: replySnap }
       setLiveMessages(prev => ({ ...prev, [activeId]: [...(prev[activeId] || []), optimistic] }))
       try {
-        const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content, room, recipient_id: activeId, reply_to: replySnap }) })
+        const { content: enc, encrypted: isEnc } = await encryptForRecipient(content, activeId)
+        const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content: enc, room, recipient_id: activeId, reply_to: replySnap, encrypted: isEnc }) })
         if (res.ok) {
           const s = await res.json()
           setLiveMessages(prev => ({ ...prev, [activeId]: (prev[activeId] || []).map(m => m.id === optimistic.id ? { ...m, id: s.id, pending: false } : m) }))
@@ -1477,7 +1844,8 @@ export default function Dashboard({ onLogout }) {
       setLiveMessages(prev => ({ ...prev, [tid]: [...(prev[tid] || []), optimistic] }))
       setRecentConversations(prev => ({ ...prev, [tid]: { lastMsg: content, time: nowTime(), fromMe: true } }))
       try {
-        const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content, room, recipient_id: tid }) })
+        const { content: enc, encrypted: isEnc } = await encryptForRecipient(content, tid)
+        const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content: enc, room, recipient_id: tid, encrypted: isEnc }) })
         if (res.ok) {
           const s = await res.json()
           setLiveMessages(prev => ({ ...prev, [tid]: (prev[tid] || []).map(m => m.id === optimistic.id ? { ...m, id: s.id, pending: false } : m) }))
@@ -1497,10 +1865,11 @@ export default function Dashboard({ onLogout }) {
     setLiveMessages(prev => ({ ...prev, [tid]: [...(prev[tid] || []), optimistic] }))
     setRecentConversations(prev => ({ ...prev, [tid]: { lastMsg: text, time: nowTime(), fromMe: true } }))
     try {
+      const { content: enc, encrypted: isEnc } = await encryptForRecipient(text, tid)
       const res = await fetch(apiUrl('/api/messages'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ content: text, room, recipient_id: tid }),
+        body: JSON.stringify({ content: enc, room, recipient_id: tid, encrypted: isEnc }),
       })
       if (res.ok) {
         const serverMsg = await res.json()
@@ -1601,6 +1970,7 @@ export default function Dashboard({ onLogout }) {
     setEditName(user?.display_name || user?.username || '')
     setEditAbout(user?.about || 'Hey there! I am using SPVB.')
     setEditPhone(user?.phone || '')
+    setEditRetention(user?.msg_retention_days ?? 3)
     setSettingsPage('account')
   }
 
@@ -1614,6 +1984,7 @@ export default function Dashboard({ onLogout }) {
         if (editName) body.display_name = editName
         if (editAbout !== undefined) body.about = editAbout
         if (editPhone !== undefined) body.phone = editPhone
+        body.msg_retention_days = editRetention
       }
       const res = await fetch(apiUrl('/api/auth/me'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
       if (res.ok) {
@@ -1631,7 +2002,7 @@ export default function Dashboard({ onLogout }) {
     const formData = new FormData()
     formData.append('file', file)
     try {
-      const res = await fetch(apiUrl('/api/upload'), { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
+      const res = await fetch(apiUrl('/api/upload?type=cover'), { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
       if (res.ok) {
         const { url } = await res.json()
         await saveProfile({ cover_url: url }, false)
@@ -1644,7 +2015,7 @@ export default function Dashboard({ onLogout }) {
     const formData = new FormData()
     formData.append('file', file)
     try {
-      const res = await fetch(apiUrl('/api/upload'), { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
+      const res = await fetch(apiUrl('/api/upload?type=avatar'), { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
       if (res.ok) {
         const { url } = await res.json()
         await saveProfile({ avatar_url: url }, false)
@@ -1957,7 +2328,7 @@ export default function Dashboard({ onLogout }) {
       if (statusPostType === 'video' && statusVideoFile) {
         const formData = new FormData()
         formData.append('file', statusVideoFile)
-        const uploadRes = await fetch(apiUrl('/api/upload'), {
+        const uploadRes = await fetch(apiUrl('/api/upload?type=status'), {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
           body: formData,
@@ -2101,39 +2472,126 @@ export default function Dashboard({ onLogout }) {
       if (!msg) return
       const fromId = msg.from_user_id
       const myId = user?.id
-      if (fromId === myId) return
-      const isActiveChat = activeIdRef.current === fromId
+      const isSelfMsg = fromId === myId && msg.recipient_id === myId
+      // Skip messages sent by me to others (already shown optimistically), but keep self-chat
+      if (fromId === myId && !isSelfMsg) return
+      const chatKey = isSelfMsg ? SELF_CHAT_ID : fromId
+      const isActiveChat = activeIdRef.current === chatKey
       const ts = msg.created_at?.endsWith('Z') ? msg.created_at : msg.created_at + 'Z'
       const timeStr = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      setLiveMessages(prev => {
-        const existing = prev[fromId] || []
-        // Deduplicate by id AND by content+sender combo (handles ID reuse after expiry)
-        if (existing.some(m => !m.pending && m.id === msg.id && m.from_user_id === fromId)) return prev
-        const cleaned = existing.filter(em =>
-          !(em.pending && em.from_user_id === fromId && em.text === msg.content)
-        )
-        return {
-          ...prev,
-          [fromId]: [...cleaned, {
-            id: msg.id, text: msg.content,
-            created_at: ts,
-            media_url: msg.media_url || null, media_type: msg.media_type || null, fileName: msg.file_name || null,
-            replyTo: msg.reply_to || null,
-            sent: false, time: timeStr,
-            read: isActiveChat, pending: false, from_user_id: fromId,
-          }],
-        }
-      })
-      // Also update recent conversations immediately so contact appears in chat list
-      setRecentConversations(prev => ({
-        ...prev,
-        [fromId]: { lastMsg: msg.content, time: timeStr, fromMe: false },
-      }))
+      // Decrypt message if E2E encrypted (async — update state after)
+      const rawContent = msg.content || ''
+      const addMsg = (plainText) => {
+        setLiveMessages(prev => {
+          const existing = prev[chatKey] || []
+          if (existing.some(m => !m.pending && m.id === msg.id)) return prev
+          const cleaned = existing.filter(em =>
+            !(em.pending && em.from_user_id === fromId && em.text === plainText)
+          )
+          return {
+            ...prev,
+            [chatKey]: [...cleaned, {
+              id: msg.id, text: plainText,
+              created_at: ts,
+              media_url: msg.media_url || null, media_type: msg.media_type || null, fileName: msg.file_name || null,
+              replyTo: msg.reply_to || null,
+              sent: isSelfMsg, time: timeStr,
+              read: isActiveChat, pending: false, from_user_id: fromId,
+            }],
+          }
+        })
+        if (!isSelfMsg) setRecentConversations(prev => ({ ...prev, [fromId]: { lastMsg: plainText, time: timeStr, fromMe: false } }))
+      }
+      if (rawContent.startsWith('__e2e__|')) {
+        waitForE2eKey().then(() => {
+          const key = e2ePrivKeyRef.current
+          if (!key) { addMsg(rawContent); return }
+          getContactPubKey(fromId).then(theirPub =>
+            decryptMessage(rawContent, key, theirPub).then(plain => addMsg(plain))
+          )
+        })
+      } else {
+        addMsg(rawContent)
+      }
       if (isActiveChat) {
         const token = localStorage.getItem('token')
-        fetch(apiUrl(`/api/messages/read/${fromId}`), { method: 'PUT', headers: { Authorization: `Bearer ${token}` } }).catch(() => {})
-      } else {
+        if (!isSelfMsg) fetch(apiUrl(`/api/messages/read/${fromId}`), { method: 'PUT', headers: { Authorization: `Bearer ${token}` } }).catch(() => {})
+      } else if (!isSelfMsg) {
         setUnreadCounts(prev => ({ ...prev, [Number(fromId)]: (prev[Number(fromId)] || 0) + 1 }))
+        // Show in-app toast notification (WhatsApp-style)
+        const senderContact = spvbContactsRef.current.find(c => String(c.id || c.user_id) === String(fromId))
+        const senderName = senderContact?.display_name || senderContact?.username || `User ${fromId}`
+        const senderColor = AVATAR_COLORS[Number(fromId) % AVATAR_COLORS.length]
+        const showToast = (plainText) => {
+          const displayText = String(plainText).startsWith('__e2e__|') ? '🔒 Encrypted message' : plainText
+          const toastPayload = { name: senderName, text: displayText, contactId: fromId, color: senderColor }
+
+          // Fire OS notification via Service Worker registration (works even when page is suspended/backgrounded)
+          if (Notification.permission === 'granted') {
+            const notifOpts = {
+              body: displayText,
+              icon: '/icon-192.png',
+              badge: '/icon-192.png',
+              tag: `spvb-${fromId}`,
+              renotify: true,
+              silent: !notifSoundRef.current,
+              data: { contactId: fromId },
+            }
+            if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+              // SW path — shows notification even when page is fully suspended on mobile
+              navigator.serviceWorker.ready.then(reg => {
+                reg.showNotification(senderName, notifOpts).catch(() => {
+                  // Fallback to direct Notification API
+                  try { const n = new Notification(senderName, notifOpts); n.onclick = () => { window.focus(); setActiveId(Number(fromId) || fromId); n.close() } } catch {}
+                })
+              }).catch(() => {})
+            } else {
+              // No SW (plain browser) — direct Notification API
+              try { const n = new Notification(senderName, notifOpts); n.onclick = () => { window.focus(); setActiveId(Number(fromId) || fromId); n.close() } } catch {}
+            }
+          }
+
+          if (document.visibilityState === 'visible') {
+            // Page is visible → show in-app toast immediately
+            if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+            setInAppToast(toastPayload)
+            toastTimerRef.current = setTimeout(() => setInAppToast(null), 5000)
+          } else {
+            // Page hidden → queue toast so user sees it when they return
+            pendingToastsRef.current.push(toastPayload)
+          }
+
+          // Notification sound
+          if (notifSoundRef.current) {
+            try {
+              const ctx = new AudioContext()
+              const buf = ctx.createBuffer(1, ctx.sampleRate * 0.35, ctx.sampleRate)
+              const ch = buf.getChannelData(0)
+              for (let i = 0; i < ch.length; i++) {
+                const t = i / ctx.sampleRate
+                const freq = t < 0.15 ? 880 : 1109
+                ch[i] = Math.sin(2 * Math.PI * freq * t) * Math.exp(-t / 0.08) * 0.35
+              }
+              const src = ctx.createBufferSource()
+              src.buffer = buf
+              src.connect(ctx.destination)
+              src.start()
+              setTimeout(() => ctx.close(), 1000)
+            } catch {}
+          }
+        }
+        // Wait for decryption if needed, then show toast
+        if (rawContent.startsWith('__e2e__|')) {
+          waitForE2eKey().then(() => {
+            const key = e2ePrivKeyRef.current
+            if (!key) { showToast(rawContent); return }
+            getContactPubKey(fromId).then(theirPub =>
+              decryptMessage(rawContent, key, theirPub).then(plain => showToast(plain))
+            )
+          })
+        } else {
+          showToast(rawContent)
+        }
       }
     }
 
@@ -2148,6 +2606,24 @@ export default function Dashboard({ onLogout }) {
           [readById]: thread.map(m => m.sent ? { ...m, read: true, pending: false } : m),
         }
       })
+    }
+
+    if (data.type === 'message_deleted') {
+      const deletedId = data.message_id
+      setLiveMessages(prev => {
+        const updated = {}
+        for (const [k, msgs] of Object.entries(prev)) updated[k] = msgs.filter(m => m.id !== deletedId)
+        return updated
+      })
+    }
+
+    if (data.type === 'typing') {
+      const fromId = String(data.from)
+      setTypingUsers(prev => ({ ...prev, [fromId]: true }))
+      clearTimeout(typingTimersRef.current[fromId])
+      typingTimersRef.current[fromId] = setTimeout(() => {
+        setTypingUsers(prev => { const n = { ...prev }; delete n[fromId]; return n })
+      }, 3000)
     }
 
     if (data.type === 'group_message') {
@@ -2210,8 +2686,53 @@ export default function Dashboard({ onLogout }) {
     </div>
   )
 
+  // Dark mode color helpers used in inline styles
+  const dm = {
+    bg: darkMode ? '#111b21' : '#f0f2f5',
+    sidebar: darkMode ? '#111b21' : '#ffffff',
+    header: darkMode ? '#202c33' : '#f0f2f5',
+    panel: darkMode ? '#202c33' : '#ffffff',
+    bubble_sent: darkMode ? '#005c4b' : '#d9fdd3',
+    bubble_recv: darkMode ? '#202c33' : '#ffffff',
+    input: darkMode ? '#2a3942' : '#ffffff',
+    text: darkMode ? '#e9edef' : '#111b21',
+    subtext: darkMode ? '#8696a0' : '#667781',
+    border: darkMode ? 'rgba(134,150,160,0.1)' : 'rgba(0,0,0,0.08)',
+    hover: darkMode ? '#2a3942' : '#f5f6f6',
+    active: darkMode ? '#2a3942' : '#f0f2f5',
+    settingsBg: darkMode ? '#111b21' : '#f0f2f5',
+    rowBg: darkMode ? '#202c33' : '#ffffff',
+    rowHover: darkMode ? '#1e2d35' : '#f5f6f6',
+    msgsBg: darkMode ? '#0b141a' : '#efeae2',
+  }
+
   return (
-    <div className="wa-app">
+    <div className="wa-app" data-theme={darkMode ? 'dark' : 'light'}>
+
+      {/* ── In-app toast notification (WhatsApp-style) ── */}
+      {inAppToast && (
+        <div
+          onClick={() => { setInAppToast(null); setActiveId(Number(inAppToast.contactId) || inAppToast.contactId) }}
+          style={{
+            position: 'fixed', top: 16, right: 16, zIndex: 9999,
+            background: '#1e2b33', borderRadius: 16, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+            display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px',
+            minWidth: 260, maxWidth: 340, cursor: 'pointer',
+            animation: 'slideInRight 0.3s ease',
+            borderLeft: `4px solid ${inAppToast.color}`,
+          }}
+        >
+          <div style={{ width: 42, height: 42, borderRadius: '50%', background: inAppToast.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 700, color: '#fff', flexShrink: 0 }}>
+            {inAppToast.name?.charAt(0)?.toUpperCase()}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ color: '#e9edef', fontWeight: 700, fontSize: 14, marginBottom: 2 }}>{inAppToast.name}</div>
+            <div style={{ color: '#8696a0', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{inAppToast.text}</div>
+          </div>
+          <button onClick={e => { e.stopPropagation(); setInAppToast(null) }} style={{ background: 'none', border: 'none', color: '#8696a0', cursor: 'pointer', padding: 4, fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+      )}
+
       {/* ── SIDEBAR ── */}
       <div className={`wa-sidebar${mobileShowChat ? ' mobile-hidden' : ''}`}>
         {/* Header */}
@@ -2295,7 +2816,7 @@ export default function Dashboard({ onLogout }) {
                 Loading contacts...
               </div>
             )}
-            {[botContact, ...groupContacts.filter(g => g.name.toLowerCase().includes(search.toLowerCase())), ...filteredContacts].map((c) => {
+            {[selfContact, botContact, ...groupContacts.filter(g => g.name.toLowerCase().includes(search.toLowerCase())), ...filteredContacts].map((c) => {
               const st = getContactStatus(c)
               const cId = String(c.id)
               const hasSt = contactStatuses.some(g => String(g.userId) === cId)
@@ -2310,7 +2831,7 @@ export default function Dashboard({ onLogout }) {
                     boxSizing: 'border-box',
                   }}>
                     <div className="wa-chat-avatar" style={{ background: c.color, position: 'relative', width: '100%', height: '100%', border: hasSt ? '2px solid #111b21' : 'none', boxSizing: 'border-box' }}>
-                      {c.avatar_url ? <img src={c.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : (c.id === 'bot' ? '🤖' : c.initials)}
+                      {c.avatar_url ? <img src={c.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : c.id === 'bot' ? '🤖' : c.initials}
                       {st.isOnline && <div style={{ position: 'absolute', bottom: 1, right: 1, width: 10, height: 10, background: '#25d366', borderRadius: '50%', border: '2px solid #111b21' }} />}
                     </div>
                   </div>
@@ -2820,34 +3341,7 @@ export default function Dashboard({ onLogout }) {
                 )
               })()}
               <div className="wa-chat-header-info" style={{ flex: 1, minWidth: 0, cursor: activeContact?.id !== 'bot' && !activeContact?.isInvite ? 'pointer' : 'default' }} onClick={() => { if (activeContact?.id !== 'bot' && !activeContact?.isInvite) setShowContactInfo(true) }}>
-                {editingNickname === activeContact?.id ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <input
-                      autoFocus
-                      value={nicknameInput}
-                      onChange={(e) => setNicknameInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveNickname(activeContact.id, nicknameInput); if (e.key === 'Escape') setEditingNickname(null) }}
-                      placeholder={activeContact?.realName || 'Nickname…'}
-                      maxLength={50}
-                      style={{ padding: '3px 8px', background: '#2a3942', border: `1px solid ${themeColor}`, borderRadius: 6, color: '#e9edef', fontSize: 13, fontFamily: 'inherit', outline: 'none', width: 130 }}
-                    />
-                    <button onClick={() => saveNickname(activeContact.id, nicknameInput)} style={{ background: themeColor, border: 'none', borderRadius: 5, color: 'white', padding: '3px 8px', cursor: 'pointer', fontSize: 12 }}>Save</button>
-                    <button onClick={() => setEditingNickname(null)} style={{ background: 'none', border: 'none', color: '#8696a0', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}>×</button>
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <div className="name">{activeContact?.name}</div>
-                    {activeContact?.isSaved && activeContact?.id !== 'bot' && (
-                      <button
-                        onClick={() => { setEditingNickname(activeContact.id); setNicknameInput(activeContact.nickname || '') }}
-                        title="Set nickname"
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#8696a0', padding: 0, display: 'flex', alignItems: 'center' }}
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
-                      </button>
-                    )}
-                  </div>
-                )}
+                <div className="name">{activeContact?.name}</div>
                 {activeContact?.nickname && activeContact.nickname !== activeContact?.realName && (
                   <div style={{ color: '#8696a0', fontSize: 11 }}>{activeContact.realName}</div>
                 )}
@@ -2866,12 +3360,7 @@ export default function Dashboard({ onLogout }) {
                   </button>
                   {showHeaderMenu && (
                     <div onClick={() => setShowHeaderMenu(false)} style={{ position: 'absolute', top: 38, right: 0, background: '#233138', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.5)', zIndex: 200, minWidth: 200, overflow: 'hidden' }}>
-                      {activeContact?.isSaved && activeContact?.id !== 'bot' && !isGroupChat && (
-                        <button onClick={() => { setEditingNickname(activeContact.id); setNicknameInput(activeContact.nickname || '') }} style={{ width: '100%', padding: '12px 16px', background: 'none', border: 'none', color: '#e9edef', fontSize: 14, cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 10 }} onMouseEnter={(e) => e.currentTarget.style.background = '#2a3942'} onMouseLeave={(e) => e.currentTarget.style.background = 'none'}>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
-                          Edit Nickname
-                        </button>
-                      )}
+                      {false && null /* nickname edit removed from header — available in Contact Info panel */}
                       <button onClick={() => setShowChatThemeModal(true)} style={{ width: '100%', padding: '12px 16px', background: 'none', border: 'none', color: '#e9edef', fontSize: 14, cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 10 }} onMouseEnter={(e) => e.currentTarget.style.background = '#2a3942'} onMouseLeave={(e) => e.currentTarget.style.background = 'none'}>
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
                         Chat Theme
@@ -2920,7 +3409,7 @@ export default function Dashboard({ onLogout }) {
               const ct = getChatTheme(activeId)
               const activeChatFont = PER_CHAT_FONTS.find(f => f.id === ct.font) || PER_CHAT_FONTS[0]
               return (
-            <div className="wa-messages" style={{ ...(ct.bg ? { background: ct.bg } : {}), ...(activeChatFont.font !== 'inherit' ? { fontFamily: activeChatFont.font } : {}), ...(activeChatFont.size ? { fontSize: activeChatFont.size } : {}) }}>
+            <div className="wa-messages" onClick={() => setMsgMenuId(null)} style={{ ...(ct.bg ? { background: ct.bg } : {}), ...(activeChatFont.font !== 'inherit' ? { fontFamily: activeChatFont.font } : {}), ...(activeChatFont.size ? { fontSize: activeChatFont.size } : {}) }}>
               <div className="wa-date-divider"><span>Today</span></div>
               {chatMsgs.length === 0 && isGroupChat && (
                 <div style={{ textAlign: 'center', padding: '40px 20px', color: '#8696a0', fontSize: 13 }}>
@@ -2949,24 +3438,30 @@ export default function Dashboard({ onLogout }) {
                 <div key={m.id} id={`msg-${m.id}`} className={`wa-msg ${m.sent ? 'sent' : 'recv'}`}
                   onMouseEnter={() => setHoveredMsgId(m.id)} onMouseLeave={() => setHoveredMsgId(null)}
                   style={{ position: 'relative' }}>
-                  {/* Action buttons (reply + forward) — appear on hover */}
-                  {hoveredMsgId === m.id && (
-                    <>
-                      <button
-                        onClick={() => { setReplyTo({ id: m.id, text: m.text, sent: m.sent, media_url: m.media_url, media_type: m.media_type, fileName: m.fileName }); setTimeout(() => inputRef.current?.focus(), 50) }}
-                        title="Reply"
-                        style={{ position: 'absolute', [m.sent ? 'left' : 'right']: -36, top: '50%', transform: 'translateY(-50%) translateY(-18px)', background: '#2a3942', border: 'none', borderRadius: '50%', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#8696a0', zIndex: 2, boxShadow: '0 1px 4px rgba(0,0,0,0.3)' }}>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
-                      </button>
-                      <button
-                        onClick={() => { setForwardMsg(m); setShowForwardPicker(true) }}
-                        title="Forward"
-                        style={{ position: 'absolute', [m.sent ? 'left' : 'right']: -36, top: '50%', transform: 'translateY(-50%) translateY(18px)', background: '#2a3942', border: 'none', borderRadius: '50%', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#8696a0', zIndex: 2, boxShadow: '0 1px 4px rgba(0,0,0,0.3)' }}>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>
-                      </button>
-                    </>
-                  )}
-                  <div className="wa-bubble" style={m.sent ? { background: getChatTheme(activeId).bubble || (chatTheme === 'green' ? '#005c4b' : chatTheme === 'blue' ? '#1a3a6b' : chatTheme === 'purple' ? '#2d1b69' : '#7a4500') } : {}}>
+                  {/* Chevron — visible on hover (desktop) or always faintly visible (mobile) */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      const dropW = 180
+                      const x = m.sent ? Math.max(4, rect.left - dropW + rect.width) : rect.left
+                      const y = rect.bottom + 4
+                      const clampedY = y + 160 > window.innerHeight ? rect.top - 164 : y
+                      setMsgMenuPos({ x, y: clampedY })
+                      setMsgMenuId(prev => prev === m.id ? null : m.id)
+                    }}
+                    style={{
+                      position: 'absolute', top: 4, [m.sent ? 'left' : 'right']: 4,
+                      background: hoveredMsgId === m.id ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.18)',
+                      backdropFilter: 'blur(4px)', border: 'none', borderRadius: '50%',
+                      width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      cursor: 'pointer', color: '#e9edef', zIndex: 10, padding: 0,
+                      opacity: hoveredMsgId === m.id ? 1 : 0.45,
+                      transition: 'opacity 0.15s, background 0.15s',
+                    }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
+                  </button>
+                  <div className="wa-bubble" style={m.sent ? { background: getChatTheme(activeId).bubble || dm.bubble_sent } : { background: dm.bubble_recv }}>
                     {/* Group sender name */}
                     {isGroupChat && !m.sent && (
                       <div style={{ color: AVATAR_COLORS[(m.from_user_id || 0) % AVATAR_COLORS.length], fontSize: 11, fontWeight: 700, marginBottom: 3 }}>{m.sender_name || 'Unknown'}</div>
@@ -2993,19 +3488,33 @@ export default function Dashboard({ onLogout }) {
                         )}
                       </div>
                     )}
-                    {/* Document bubble */}
-                    {m.media_url && m.media_type === 'document' && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 2px', minWidth: 200 }}>
-                        <div style={{ width: 42, height: 46, background: 'rgba(255,255,255,0.08)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0 }}>📄</div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ color: '#e9edef', fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.fileName || 'Document'}</div>
-                          <div style={{ color: '#8696a0', fontSize: 11, marginTop: 2 }}>Document</div>
+                    {/* Document / PDF bubble */}
+                    {m.media_url && m.media_type === 'document' && (() => {
+                      const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') || m.media_url.includes('.pdf')
+                      return (
+                        <div style={{ minWidth: 220, maxWidth: 300 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 4px 8px' }}>
+                            <div style={{ width: 42, height: 46, background: isPdf ? 'rgba(231,76,60,0.18)' : 'rgba(255,255,255,0.08)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0 }}>{isPdf ? '📕' : '📄'}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ color: '#e9edef', fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.fileName || 'Document'}</div>
+                              <div style={{ color: '#8696a0', fontSize: 11, marginTop: 2 }}>{isPdf ? 'PDF Document' : 'Document'}</div>
+                            </div>
+                            <a href={m.media_url} download={m.fileName || 'document'} target="_blank" rel="noreferrer" style={{ color: themeColor, flexShrink: 0, display: 'flex' }}>
+                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            </a>
+                          </div>
+                          {isPdf && (
+                            <div style={{ borderRadius: 6, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)' }}>
+                              <iframe src={`${m.media_url}#toolbar=0&navpanes=0`} title={m.fileName} width="100%" height="200" style={{ display: 'block', border: 'none', background: '#fff' }} />
+                              <a href={m.media_url} target="_blank" rel="noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '7px', background: 'rgba(255,255,255,0.05)', color: themeColor, fontSize: 12, textDecoration: 'none', fontWeight: 500 }}>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                                Open full PDF
+                              </a>
+                            </div>
+                          )}
                         </div>
-                        <a href={m.media_url} download={m.fileName || 'document'} target="_blank" rel="noreferrer" style={{ color: themeColor, flexShrink: 0, display: 'flex' }}>
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                        </a>
-                      </div>
-                    )}
+                      )
+                    })()}
                     {/* Image */}
                     {m.media_url && m.media_type === 'image' && (
                       <img src={m.media_url} alt="media" style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 8, display: 'block', marginBottom: m.text ? 6 : 0, cursor: 'pointer' }} onClick={() => window.open(m.media_url, '_blank')} />
@@ -3079,7 +3588,14 @@ export default function Dashboard({ onLogout }) {
                       if (!sp || sp.type !== 'gif') return null
                       return <img src={sp.url} alt="GIF" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, display: 'block' }} />
                     })()}
-                    {m.text && !parseSpecialContent(m.text) && <div className="wa-bubble-text">{m.text}</div>}
+                    {m.text && !parseSpecialContent(m.text) && (
+                      String(m.text).startsWith('__e2e__|') || String(m.text).startsWith('e2e__|')
+                        ? <div className="wa-bubble-text" style={{ color: '#8696a0', fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                            Encrypted message
+                          </div>
+                        : <div className="wa-bubble-text">{m.text}</div>
+                    )}
                     {!m.text && !m.media_url && <div className="wa-bubble-text"></div>}
                     <div className="wa-bubble-meta">
                       <span className="wa-bubble-time">{m.time}</span>
@@ -3094,6 +3610,14 @@ export default function Dashboard({ onLogout }) {
                 )
               })}
               {botTyping && activeId === 'bot' && <div className="wa-msg recv"><div className="wa-typing"><span /><span /><span /></div></div>}
+              {activeId && activeId !== 'bot' && typingUsers[String(activeId)] && (
+                <div className="wa-msg recv">
+                  <div className="wa-bubble recv" style={{ background: darkMode ? '#202c33' : '#fff', display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px' }}>
+                    <div className="wa-typing"><span /><span /><span /></div>
+                    <span style={{ color: darkMode ? '#8696a0' : '#667781', fontSize: 12 }}>typing...</span>
+                  </div>
+                </div>
+              )}
               <div ref={msgEndRef} />
             </div>
             )})()}
@@ -3259,7 +3783,14 @@ export default function Dashboard({ onLogout }) {
                     </button>
                   </div>
                   <div className="wa-input-wrap">
-                    <input ref={inputRef} type="text" placeholder="Type a message" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKey} onFocus={() => setShowAttachMenu(false)} />
+                    <input ref={inputRef} type="text" placeholder="Type a message" value={input} onChange={(e) => {
+                      setInput(e.target.value)
+                      // Send typing indicator (throttled to once per 2s)
+                      if (activeId && activeId !== 'bot' && wsRef.current?.readyState === 1 && !typingThrottleRef.current) {
+                        wsRef.current.send(JSON.stringify({ type: 'typing', target: String(activeId) }))
+                        typingThrottleRef.current = setTimeout(() => { typingThrottleRef.current = null }, 2000)
+                      }
+                    }} onKeyDown={handleKey} onFocus={() => setShowAttachMenu(false)} />
                   </div>
                   <button className="wa-send-btn" onClick={() => { setShowAttachMenu(false); if (input.trim()) sendMessage(); else startRecording() }} style={{ background: themeColor }}>
                     {input.trim()
@@ -3296,7 +3827,14 @@ export default function Dashboard({ onLogout }) {
                     {activeContact.nickname && activeContact.nickname !== activeContact.realName && (
                       <div style={{ color: '#8696a0', fontSize: 13 }}>{activeContact.realName}</div>
                     )}
-                    <div style={{ color: getContactStatus(activeContact).isOnline ? '#25d366' : '#8696a0', fontSize: 13, marginTop: 4 }}>{getContactStatus(activeContact).label}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 4 }}>
+                      {getContactStatus(activeContact).isOnline && (
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#25d366', display: 'inline-block', flexShrink: 0 }} />
+                      )}
+                      <span style={{ color: getContactStatus(activeContact).isOnline ? '#25d366' : '#8696a0', fontSize: 13 }}>
+                        {getContactStatus(activeContact).label}
+                      </span>
+                    </div>
                   </div>
                   {/* Call buttons */}
                   <div style={{ display: 'flex', gap: 24, marginTop: 8 }}>
@@ -3314,6 +3852,40 @@ export default function Dashboard({ onLogout }) {
                     </button>
                   </div>
                 </div>
+                {/* Nickname section — only in contact info panel */}
+                {activeContact.isSaved && (
+                  <div style={{ background: '#202c33', padding: '16px 20px', margin: '6px 0', borderTop: '1px solid rgba(134,150,160,0.08)', borderBottom: '1px solid rgba(134,150,160,0.08)' }}>
+                    <div style={{ color: themeColor, fontSize: 12, fontWeight: 600, marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Nickname</div>
+                    {editingNickname === activeContact.id ? (
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input
+                          autoFocus
+                          value={nicknameInput}
+                          onChange={(e) => setNicknameInput(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') saveNickname(activeContact.id, nicknameInput); if (e.key === 'Escape') setEditingNickname(null) }}
+                          placeholder={activeContact.realName || 'Enter nickname…'}
+                          maxLength={50}
+                          style={{ flex: 1, padding: '8px 12px', background: '#2a3942', border: `1px solid ${themeColor}55`, borderRadius: 8, color: '#e9edef', fontSize: 14, fontFamily: 'inherit', outline: 'none' }}
+                        />
+                        <button onClick={() => saveNickname(activeContact.id, nicknameInput)} style={{ padding: '8px 14px', background: themeColor, border: 'none', borderRadius: 8, color: 'white', cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: 'inherit' }}>Save</button>
+                        <button onClick={() => setEditingNickname(null)} style={{ background: 'none', border: 'none', color: '#8696a0', cursor: 'pointer', fontSize: 20, lineHeight: 1, padding: '0 4px' }}>×</button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#e9edef', fontSize: 14 }}>
+                          {activeContact.nickname && activeContact.nickname !== activeContact.realName ? activeContact.nickname : <span style={{ color: '#8696a0', fontStyle: 'italic' }}>No nickname set</span>}
+                        </span>
+                        <button
+                          onClick={() => { setEditingNickname(activeContact.id); setNicknameInput(activeContact.nickname || '') }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: '#2a3942', border: 'none', borderRadius: 8, color: '#e9edef', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
+                          Edit
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {/* About section */}
                 <div style={{ background: '#202c33', padding: '16px 20px', margin: '6px 0', borderTop: '1px solid rgba(134,150,160,0.08)', borderBottom: '1px solid rgba(134,150,160,0.08)' }}>
                   <div style={{ color: themeColor, fontSize: 12, fontWeight: 600, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>About</div>
@@ -3426,6 +3998,120 @@ export default function Dashboard({ onLogout }) {
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── MESSAGE CONTEXT MENU (fixed so it's never clipped by scroll) ── */}
+      {msgMenuId !== null && (() => {
+        const m = (liveMessages[activeId] || []).find(x => x.id === msgMenuId)
+          || (activeId === 'bot' ? botMsgs : []).find(x => x.id === msgMenuId)
+        if (!m) return null
+        return (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 500 }} onClick={() => setMsgMenuId(null)}>
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{
+                position: 'fixed', left: msgMenuPos.x, top: msgMenuPos.y,
+                background: '#1e2b33', borderRadius: 12,
+                boxShadow: '0 8px 32px rgba(0,0,0,0.7)', zIndex: 501,
+                minWidth: 180, overflow: 'hidden',
+                border: '1px solid rgba(134,150,160,0.15)',
+                animation: 'msgIn 0.12s ease-out',
+              }}>
+              <button onClick={() => {
+                setReplyTo({ id: m.id, text: m.text, sent: m.sent, media_url: m.media_url, media_type: m.media_type, fileName: m.fileName })
+                setMsgMenuId(null)
+                setTimeout(() => inputRef.current?.focus(), 50)
+              }} style={{ width: '100%', padding: '12px 18px', background: 'none', border: 'none', color: '#e9edef', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left' }}
+                onMouseEnter={e => e.currentTarget.style.background = '#2a3942'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00a884" strokeWidth="2.5"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+                Reply
+              </button>
+              <div style={{ height: 1, background: 'rgba(134,150,160,0.1)' }} />
+              <button onClick={() => {
+                navigator.clipboard?.writeText(m.text || '').catch(() => {})
+                setMsgMenuId(null)
+              }} style={{ width: '100%', padding: '12px 18px', background: 'none', border: 'none', color: '#e9edef', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left' }}
+                onMouseEnter={e => e.currentTarget.style.background = '#2a3942'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy
+              </button>
+              <div style={{ height: 1, background: 'rgba(134,150,160,0.1)' }} />
+              <button onClick={() => { setForwardMsg(m); setShowForwardPicker(true); setMsgMenuId(null) }}
+                style={{ width: '100%', padding: '12px 18px', background: 'none', border: 'none', color: '#e9edef', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left' }}
+                onMouseEnter={e => e.currentTarget.style.background = '#2a3942'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2.5"><polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>
+                Forward
+              </button>
+              <div style={{ height: 1, background: 'rgba(134,150,160,0.1)' }} />
+              <button onClick={() => { setDeleteConfirmMsg(m); setMsgMenuId(null) }}
+                style={{ width: '100%', padding: '12px 18px', background: 'none', border: 'none', color: '#e74c3c', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left' }}
+                onMouseEnter={e => e.currentTarget.style.background = '#2a3942'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#e74c3c" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                Delete
+              </button>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* ── DELETE CONFIRM POPUP ── */}
+      {deleteConfirmMsg && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)' }}
+          onClick={() => setDeleteConfirmMsg(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#233138', borderRadius: 16, width: 320, boxShadow: '0 16px 48px rgba(0,0,0,0.6)', overflow: 'hidden', border: '1px solid rgba(134,150,160,0.12)' }}>
+            {/* Header */}
+            <div style={{ padding: '20px 20px 14px', borderBottom: '1px solid rgba(134,150,160,0.1)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(231,76,60,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#e74c3c" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                </div>
+                <span style={{ color: '#e9edef', fontSize: 16, fontWeight: 700 }}>Delete Message</span>
+              </div>
+              <div style={{ color: '#8696a0', fontSize: 13, lineHeight: 1.5, paddingLeft: 46 }}>
+                {deleteConfirmMsg.sent ? 'Choose how to delete this message.' : 'You can only delete this message for yourself.'}
+              </div>
+            </div>
+            {/* Actions */}
+            <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {deleteConfirmMsg.sent && (
+                <button
+                  onClick={async () => {
+                    const token = localStorage.getItem('token')
+                    const mid = deleteConfirmMsg.id
+                    try { await fetch(apiUrl(`/api/messages/${mid}`), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }) } catch (_) {}
+                    setLiveMessages(prev => {
+                      const updated = {}
+                      for (const [k, msgs] of Object.entries(prev)) updated[k] = msgs.filter(x => x.id !== mid)
+                      return updated
+                    })
+                    setDeleteConfirmMsg(null)
+                  }}
+                  style={{ width: '100%', padding: '12px 16px', background: 'rgba(231,76,60,0.12)', border: '1px solid rgba(231,76,60,0.25)', borderRadius: 10, color: '#e74c3c', fontSize: 14, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, fontFamily: 'inherit' }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(231,76,60,0.22)'} onMouseLeave={e => e.currentTarget.style.background = 'rgba(231,76,60,0.12)'}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                  Delete for Everyone
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  const mid = deleteConfirmMsg.id
+                  setLiveMessages(prev => ({ ...prev, [activeId]: (prev[activeId] || []).filter(x => x.id !== mid) }))
+                  setDeleteConfirmMsg(null)
+                }}
+                style={{ width: '100%', padding: '12px 16px', background: 'rgba(134,150,160,0.08)', border: '1px solid rgba(134,150,160,0.15)', borderRadius: 10, color: '#e9edef', fontSize: 14, fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, fontFamily: 'inherit' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(134,150,160,0.15)'} onMouseLeave={e => e.currentTarget.style.background = 'rgba(134,150,160,0.08)'}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                Delete for Me
+              </button>
+              <button
+                onClick={() => setDeleteConfirmMsg(null)}
+                style={{ width: '100%', padding: '12px 16px', background: 'none', border: '1px solid rgba(134,150,160,0.12)', borderRadius: 10, color: '#8696a0', fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(134,150,160,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                Cancel
+              </button>
             </div>
           </div>
         </div>
@@ -3852,30 +4538,30 @@ export default function Dashboard({ onLogout }) {
       {/* ── SETTINGS PANEL ── */}
       {showSettings && (
         <div className="wa-call-modal" onClick={() => { setShowSettings(false); setSettingsPage(null) }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ position: 'fixed', top: 0, left: 0, width: 'min(380px, 100vw)', height: '100%', background: '#111b21', display: 'flex', flexDirection: 'column', zIndex: 300, boxShadow: '4px 0 20px rgba(0,0,0,0.4)' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ position: 'fixed', top: 0, left: 0, width: 'min(380px, 100vw)', height: '100%', background: dm.settingsBg, display: 'flex', flexDirection: 'column', zIndex: 300, boxShadow: '4px 0 20px rgba(0,0,0,0.4)' }}>
 
             {/* Header */}
-            <div style={{ padding: '16px 20px', background: '#202c33', display: 'flex', alignItems: 'center', gap: 14, borderBottom: '1px solid rgba(134,150,160,0.1)' }}>
-              <button onClick={() => settingsPage ? setSettingsPage(null) : setShowSettings(false)} style={{ background: 'none', border: 'none', color: '#8696a0', cursor: 'pointer', display: 'flex' }}>
+            <div style={{ padding: '16px 20px', background: dm.header, display: 'flex', alignItems: 'center', gap: 14, borderBottom: `1px solid ${dm.border}` }}>
+              <button onClick={() => settingsPage ? setSettingsPage(null) : setShowSettings(false)} style={{ background: 'none', border: 'none', color: dm.subtext, cursor: 'pointer', display: 'flex' }}>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
               </button>
-              <span style={{ color: '#e9edef', fontSize: 18, fontWeight: 600 }}>
+              <span style={{ color: dm.text, fontSize: 18, fontWeight: 600 }}>
                 {settingsPage === 'account' ? 'Account' : settingsPage === 'chats' ? 'Chats' : settingsPage === 'notifications' ? 'Notifications' : settingsPage === 'privacy' ? 'Privacy' : settingsPage === 'help' ? 'Help' : settingsPage === 'devices' ? 'Linked Devices' : 'Settings'}
               </span>
             </div>
 
-            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <div style={{ flex: 1, overflowY: 'auto', background: dm.settingsBg }}>
               {/* Main settings list */}
               {!settingsPage && <>
                 {/* Profile card */}
-                <div onClick={openAccountSettings} style={{ background: '#202c33', margin: '8px 0', padding: '20px', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }}
-                  onMouseEnter={(e) => e.currentTarget.style.background = '#2a3942'} onMouseLeave={(e) => e.currentTarget.style.background = '#202c33'}>
+                <div onClick={openAccountSettings} style={{ background: dm.panel, margin: '8px 0', padding: '20px', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = dm.hover} onMouseLeave={(e) => e.currentTarget.style.background = dm.panel}>
                   <div style={{ width: 56, height: 56, borderRadius: '50%', background: themeColor, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 700, fontSize: 22, overflow: 'hidden', flexShrink: 0 }}>
                     {user.avatar_url ? <img src={user.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : userInitial}
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ color: '#e9edef', fontSize: 16, fontWeight: 600 }}>{user.display_name || user.username}</div>
-                    <div style={{ color: '#8696a0', fontSize: 13 }}>{user.about || 'Hey there! I am using SPVB.'}</div>
+                    <div style={{ color: dm.text, fontSize: 16, fontWeight: 600 }}>{user.display_name || user.username}</div>
+                    <div style={{ color: dm.subtext, fontSize: 13 }}>{user.about || 'Hey there! I am using SPVB.'}</div>
                   </div>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><polyline points="9 18 15 12 9 6"/></svg>
                 </div>
@@ -3888,10 +4574,10 @@ export default function Dashboard({ onLogout }) {
                   { key: 'devices', icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>, label: 'Linked Devices', sub: 'Link another device via QR code' },
                   { key: 'help', icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>, label: 'Help', sub: 'FAQ, contact us, privacy policy' },
                 ].map(({ key, icon, label, sub }) => (
-                  <div key={key} onClick={() => setSettingsPage(key)} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '16px 20px', cursor: 'pointer', borderBottom: '1px solid rgba(134,150,160,0.06)' }}
-                    onMouseEnter={(e) => e.currentTarget.style.background = '#1e2d35'} onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
-                    <div style={{ color: '#8696a0' }}>{icon}</div>
-                    <div style={{ flex: 1 }}><div style={{ color: '#e9edef', fontSize: 15 }}>{label}</div><div style={{ color: '#8696a0', fontSize: 12 }}>{sub}</div></div>
+                  <div key={key} onClick={() => setSettingsPage(key)} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '16px 20px', cursor: 'pointer', borderBottom: `1px solid ${dm.border}`, background: dm.panel }}
+                    onMouseEnter={(e) => e.currentTarget.style.background = dm.hover} onMouseLeave={(e) => e.currentTarget.style.background = dm.panel}>
+                    <div style={{ color: dm.subtext }}>{icon}</div>
+                    <div style={{ flex: 1 }}><div style={{ color: dm.text, fontSize: 15 }}>{label}</div><div style={{ color: dm.subtext, fontSize: 12 }}>{sub}</div></div>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><polyline points="9 18 15 12 9 6"/></svg>
                   </div>
                 ))}
@@ -3952,76 +4638,183 @@ export default function Dashboard({ onLogout }) {
                   </div>
                   <div style={{ padding: '44px 20px 20px' }}>
                   <div style={{ marginBottom: 16 }}>
-                    <label style={{ color: '#8696a0', fontSize: 12, display: 'block', marginBottom: 6 }}>Display Name</label>
-                    <input value={editName} onChange={(e) => setEditName(e.target.value)} maxLength={50} style={{ width: '100%', padding: '10px 14px', background: '#2a3942', border: `1px solid ${themeColor}40`, borderRadius: 8, color: '#e9edef', fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+                    <label style={{ color: dm.subtext, fontSize: 12, display: 'block', marginBottom: 6 }}>Display Name <span style={{ color: themeColor, fontSize: 11 }}>(editable anytime)</span></label>
+                    <input value={editName} onChange={(e) => setEditName(e.target.value)} maxLength={50} style={{ width: '100%', padding: '10px 14px', background: dm.input, border: `1px solid ${themeColor}40`, borderRadius: 8, color: dm.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
                   </div>
                   <div style={{ marginBottom: 16 }}>
-                    <label style={{ color: '#8696a0', fontSize: 12, display: 'block', marginBottom: 6 }}>About</label>
-                    <input value={editAbout} onChange={(e) => setEditAbout(e.target.value)} maxLength={140} placeholder="Hey there! I am using SPVB." style={{ width: '100%', padding: '10px 14px', background: '#2a3942', border: '1px solid rgba(134,150,160,0.2)', borderRadius: 8, color: '#e9edef', fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
-                    <div style={{ color: '#8696a0', fontSize: 11, textAlign: 'right', marginTop: 4 }}>{editAbout.length}/140</div>
+                    <label style={{ color: dm.subtext, fontSize: 12, display: 'block', marginBottom: 6 }}>About</label>
+                    <input value={editAbout} onChange={(e) => setEditAbout(e.target.value)} maxLength={140} placeholder="Hey there! I am using SPVB." style={{ width: '100%', padding: '10px 14px', background: dm.input, border: `1px solid ${dm.border}`, borderRadius: 8, color: dm.text, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+                    <div style={{ color: dm.subtext, fontSize: 11, textAlign: 'right', marginTop: 4 }}>{editAbout.length}/140</div>
                   </div>
-                  <div style={{ marginBottom: 16 }}>
-                    <label style={{ color: '#8696a0', fontSize: 12, display: 'block', marginBottom: 6 }}>Phone Number</label>
-                    <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} maxLength={15} placeholder="e.g. 9876543210" style={{ width: '100%', padding: '10px 14px', background: '#2a3942', border: '1px solid rgba(134,150,160,0.2)', borderRadius: 8, color: '#e9edef', fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+                  {/* Locked fields */}
+                  <div style={{ marginBottom: 8, padding: '10px 14px', background: dm.panel, borderRadius: 8, border: `1px solid ${dm.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ color: dm.subtext, fontSize: 11, marginBottom: 1 }}>📱 Phone Number <span style={{ color: '#ea5455', fontSize: 10 }}>locked</span></div>
+                      <div style={{ color: dm.text, fontSize: 14 }}>{user.phone || '—'}</div>
+                    </div>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={dm.subtext} strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                   </div>
-                  <div style={{ marginBottom: 16, padding: '12px 14px', background: '#202c33', borderRadius: 8 }}>
-                    <div style={{ color: '#8696a0', fontSize: 12, marginBottom: 2 }}>Email</div>
-                    <div style={{ color: '#e9edef', fontSize: 14 }}>{user.email}</div>
+                  <div style={{ marginBottom: 16, padding: '10px 14px', background: dm.panel, borderRadius: 8, border: `1px solid ${dm.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ color: dm.subtext, fontSize: 11, marginBottom: 1 }}>✉️ Email <span style={{ color: '#ea5455', fontSize: 10 }}>locked</span></div>
+                      <div style={{ color: dm.text, fontSize: 14 }}>{user.email}</div>
+                    </div>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={dm.subtext} strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                   </div>
-                  <div style={{ marginBottom: 16, padding: '12px 14px', background: '#202c33', borderRadius: 8 }}>
-                    <div style={{ color: '#8696a0', fontSize: 12, marginBottom: 2 }}>Username</div>
-                    <div style={{ color: '#e9edef', fontSize: 14 }}>@{user.username}</div>
+                  {/* Message Retention */}
+                  <div style={{ marginBottom: 20 }}>
+                    <label style={{ color: '#8696a0', fontSize: 12, display: 'block', marginBottom: 6 }}>Message Auto-Delete</label>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+                      {[{v:1,l:'1 Day'},{v:3,l:'3 Days'},{v:7,l:'7 Days'},{v:14,l:'14 Days'},{v:30,l:'30 Days'},{v:0,l:'Never'}].map(({v,l}) => (
+                        <button key={v} onClick={() => setEditRetention(v)}
+                          style={{ padding: '9px 6px', borderRadius: 8, border: editRetention === v ? `2px solid ${themeColor}` : '1px solid rgba(134,150,160,0.2)', background: editRetention === v ? `${themeColor}22` : '#2a3942', color: editRetention === v ? themeColor : '#8696a0', fontSize: 12, fontWeight: editRetention === v ? 700 : 400, cursor: 'pointer', fontFamily: 'inherit' }}>
+                          {l}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ color: '#8696a0', fontSize: 11, marginTop: 6 }}>
+                      {editRetention === 0 ? 'Messages will never be auto-deleted.' : `Messages older than ${editRetention} day${editRetention > 1 ? 's' : ''} will be automatically deleted.`}
+                    </div>
                   </div>
-                  <button onClick={saveProfile} disabled={editSaving} style={{ width: '100%', padding: '12px', background: themeColor, border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontWeight: 600, fontSize: 14, fontFamily: 'inherit', opacity: editSaving ? 0.7 : 1 }}>
+                  <button onClick={saveProfile} disabled={editSaving} style={{ width: '100%', padding: '12px', background: themeColor, border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontWeight: 600, fontSize: 14, fontFamily: 'inherit', opacity: editSaving ? 0.7 : 1, marginBottom: 12 }}>
                     {editSaving ? 'Saving...' : 'Save Changes'}
                   </button>
+                  {/* Delete account */}
+                  <div style={{ borderTop: `1px solid ${dm.border}`, paddingTop: 16, marginTop: 4 }}>
+                    <div style={{ color: dm.subtext, fontSize: 12, marginBottom: 10, textAlign: 'center' }}>Danger Zone</div>
+                    <button
+                      onClick={async () => {
+                        const confirmed = window.confirm('⚠️ Delete your account permanently?\n\nThis will delete all your messages, contacts, and data. This cannot be undone.')
+                        if (!confirmed) return
+                        const second = window.confirm('Are you absolutely sure? This is irreversible.')
+                        if (!second) return
+                        try {
+                          const token = localStorage.getItem('token')
+                          await fetch(apiUrl(`/api/users/${user.id}`), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+                        } catch {}
+                        localStorage.clear()
+                        window.location.href = '/login'
+                      }}
+                      style={{ width: '100%', padding: '11px', background: 'rgba(234,84,85,0.1)', border: '1.5px solid rgba(234,84,85,0.4)', borderRadius: 10, color: '#ea5455', cursor: 'pointer', fontWeight: 600, fontSize: 14, fontFamily: 'inherit' }}
+                    >
+                      🗑️ Delete My Account
+                    </button>
+                    <div style={{ color: dm.subtext, fontSize: 11, textAlign: 'center', marginTop: 6 }}>This permanently deletes all your data</div>
+                  </div>
                   </div>
                 </div>
               )}
 
               {/* Chats sub-page */}
               {settingsPage === 'chats' && (
-                <div style={{ padding: 20 }}>
-                  <div style={{ color: '#8696a0', fontSize: 12, marginBottom: 16, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Theme Color</div>
-                  {Object.entries(THEMES).map(([key, color]) => (
-                    <div key={key} onClick={() => { setChatTheme(key); localStorage.setItem('chat_theme', key) }} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px', background: chatTheme === key ? '#2a3942' : 'transparent', borderRadius: 10, cursor: 'pointer', marginBottom: 6 }}
-                      onMouseEnter={(e) => { if (chatTheme !== key) e.currentTarget.style.background = '#1e2d35' }} onMouseLeave={(e) => { if (chatTheme !== key) e.currentTarget.style.background = 'transparent' }}>
-                      <div style={{ width: 32, height: 32, borderRadius: '50%', background: color, flexShrink: 0 }} />
-                      <span style={{ color: '#e9edef', fontSize: 14, flex: 1, textTransform: 'capitalize' }}>{key}</span>
-                      {chatTheme === key && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>}
-                    </div>
-                  ))}
+                <div style={{ padding: 20, overflowY: 'auto', background: dm.settingsBg }}>
+                  {/* Dark / Light mode */}
+                  <div style={{ color: '#8696a0', fontSize: 12, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Appearance</div>
+                  <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+                    {[{ id: true, label: '🌙 Dark', desc: 'Dark mode' }, { id: false, label: '☀️ Light', desc: 'Light mode' }].map(m => (
+                      <div key={String(m.id)} onClick={() => { setDarkMode(m.id); localStorage.setItem('dark_mode', m.id ? 'dark' : 'light') }}
+                        style={{ flex: 1, padding: '12px', borderRadius: 12, border: `2px solid ${darkMode === m.id ? themeColor : 'rgba(134,150,160,0.2)'}`, cursor: 'pointer', textAlign: 'center', background: darkMode === m.id ? `${themeColor}15` : 'transparent', transition: 'all 0.2s' }}>
+                        <div style={{ color: '#e9edef', fontSize: 14, fontWeight: 600 }}>{m.label}</div>
+                        <div style={{ color: '#8696a0', fontSize: 11, marginTop: 2 }}>{m.desc}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Font style */}
+                  <div style={{ color: '#8696a0', fontSize: 12, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Font Style</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+                    {APP_FONTS.map(f => (
+                      <div key={f.id} onClick={() => { setAppFont(f.id); localStorage.setItem('app_font', f.id) }}
+                        style={{ padding: '8px 16px', borderRadius: 20, border: `2px solid ${appFont === f.id ? themeColor : 'rgba(134,150,160,0.2)'}`, cursor: 'pointer', background: appFont === f.id ? `${themeColor}15` : 'transparent', fontFamily: f.family, transition: 'all 0.2s' }}>
+                        <span style={{ color: appFont === f.id ? themeColor : '#e9edef', fontSize: 13, fontWeight: 500 }}>{f.label}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Accent color */}
+                  <div style={{ color: '#8696a0', fontSize: 12, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Accent Color</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 20 }}>
+                    {Object.entries(THEMES).map(([key, color]) => (
+                      <div key={key} onClick={() => { setChatTheme(key); localStorage.setItem('chat_theme', key) }}
+                        style={{ width: 36, height: 36, borderRadius: '50%', background: color, cursor: 'pointer', border: `3px solid ${chatTheme === key ? '#fff' : 'transparent'}`, boxShadow: chatTheme === key ? `0 0 0 3px ${color}` : 'none', transition: 'all 0.2s', position: 'relative' }}>
+                        {chatTheme === key && <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14 }}>✓</span>}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Premium gradient themes */}
+                  <div style={{ color: '#8696a0', fontSize: 12, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>✨ Premium Themes</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 20 }}>
+                    {PREMIUM_THEMES.map(pt => (
+                      <div key={pt.id} onClick={() => { setChatTheme(pt.id); localStorage.setItem('chat_theme', pt.id); if (!THEMES[pt.id]) { const next = { ...THEMES, [pt.id]: pt.accent }; } }}
+                        style={{ borderRadius: 14, overflow: 'hidden', cursor: 'pointer', border: `2px solid ${chatTheme === pt.id ? pt.accent : 'rgba(134,150,160,0.15)'}`, transition: 'all 0.2s' }}>
+                        <div style={{ height: 56, background: pt.gradient }} />
+                        <div style={{ padding: '8px 10px', background: '#1a2530', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <div style={{ width: 10, height: 10, borderRadius: '50%', background: pt.accent, flexShrink: 0 }} />
+                          <span style={{ color: '#e9edef', fontSize: 12, fontWeight: 500 }}>{pt.label}</span>
+                          {chatTheme === pt.id && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={pt.accent} strokeWidth="2.5" style={{ marginLeft: 'auto' }}><polyline points="20 6 9 17 4 12"/></svg>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
               {/* Notifications sub-page */}
               {settingsPage === 'notifications' && (
-                <div style={{ padding: 20 }}>
+                <div style={{ padding: 20, background: dm.settingsBg }}>
                   {[
                     { label: 'Message notifications', sub: 'Show notification for new messages', val: notifSound, set: (v) => { setNotifSound(v); localStorage.setItem('notif_sound', v ? 'on' : 'off') } },
                     { label: 'Sound', sub: 'Play sound for new messages', val: notifSound, set: (v) => { setNotifSound(v); localStorage.setItem('notif_sound', v ? 'on' : 'off') } },
                     { label: 'Read receipts', sub: 'Show when messages are read', val: readReceipts, set: (v) => { setReadReceipts(v); localStorage.setItem('read_receipts', v ? 'on' : 'off') } },
                   ].map(({ label, sub, val, set }) => (
-                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: '1px solid rgba(134,150,160,0.07)' }}>
-                      <div style={{ flex: 1 }}><div style={{ color: '#e9edef', fontSize: 14 }}>{label}</div><div style={{ color: '#8696a0', fontSize: 12 }}>{sub}</div></div>
+                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: `1px solid ${dm.border}` }}>
+                      <div style={{ flex: 1 }}><div style={{ color: dm.text, fontSize: 14 }}>{label}</div><div style={{ color: dm.subtext, fontSize: 12 }}>{sub}</div></div>
                       <div onClick={() => set(!val)} style={{ width: 48, height: 26, background: val ? themeColor : '#2a3942', borderRadius: 13, cursor: 'pointer', position: 'relative', transition: 'background 0.2s', flexShrink: 0 }}>
                         <div style={{ position: 'absolute', top: 3, left: val ? 24 : 3, width: 20, height: 20, background: 'white', borderRadius: '50%', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
                       </div>
                     </div>
                   ))}
+
+                  {/* Permission status + test button */}
+                  <div style={{ marginTop: 20, padding: 16, background: dm.header, borderRadius: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ width: 10, height: 10, borderRadius: '50%', background: Notification.permission === 'granted' ? '#25d366' : '#f39c12', flexShrink: 0 }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ color: dm.text, fontSize: 13, fontWeight: 600 }}>
+                          {Notification.permission === 'granted' ? 'Notifications allowed' : Notification.permission === 'denied' ? 'Notifications blocked' : 'Permission not granted'}
+                        </div>
+                        <div style={{ color: dm.subtext, fontSize: 11 }}>
+                          {Notification.permission === 'denied' ? 'Enable in browser settings → Site Settings → Notifications' : 'Background push requires HTTPS (production)'}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        const token = localStorage.getItem('token')
+                        const res = await fetch(apiUrl('/api/push/test'), { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+                        const d = await res.json()
+                        if (d.subscriptions === 0) alert('No push subscription found.\nOn HTTPS: open Settings → Notifications and allow notifications, then re-open the app.')
+                        else alert(`Test push sent to ${d.subscriptions} subscription(s).\nMinimize this app and check your notification bar!`)
+                      }}
+                      style={{ padding: '10px 0', background: themeColor, border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontWeight: 600, fontSize: 14, fontFamily: 'inherit' }}
+                    >
+                      🔔 Send Test Notification
+                    </button>
+                  </div>
                 </div>
               )}
 
               {/* Privacy sub-page */}
               {settingsPage === 'privacy' && (
-                <div style={{ padding: 20 }}>
+                <div style={{ padding: 20, background: dm.settingsBg }}>
                   {[
                     { label: 'Last seen', sub: showLastSeen ? 'Everyone can see your last seen' : 'Nobody can see your last seen', val: showLastSeen, set: (v) => { setShowLastSeen(v); localStorage.setItem('show_last_seen', v ? 'on' : 'off') } },
                     { label: 'Read receipts', sub: readReceipts ? 'Contacts see when you read messages' : 'Read receipts disabled', val: readReceipts, set: (v) => { setReadReceipts(v); localStorage.setItem('read_receipts', v ? 'on' : 'off') } },
                     { label: 'Online status', sub: 'Show when you are online', val: true, set: () => {} },
                   ].map(({ label, sub, val, set }) => (
-                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: '1px solid rgba(134,150,160,0.07)' }}>
-                      <div style={{ flex: 1 }}><div style={{ color: '#e9edef', fontSize: 14 }}>{label}</div><div style={{ color: '#8696a0', fontSize: 12 }}>{sub}</div></div>
+                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: `1px solid ${dm.border}` }}>
+                      <div style={{ flex: 1 }}><div style={{ color: dm.text, fontSize: 14 }}>{label}</div><div style={{ color: dm.subtext, fontSize: 12 }}>{sub}</div></div>
                       <div onClick={() => set(!val)} style={{ width: 48, height: 26, background: val ? themeColor : '#2a3942', borderRadius: 13, cursor: 'pointer', position: 'relative', transition: 'background 0.2s', flexShrink: 0 }}>
                         <div style={{ position: 'absolute', top: 3, left: val ? 24 : 3, width: 20, height: 20, background: 'white', borderRadius: '50%', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
                       </div>
@@ -4227,11 +5020,9 @@ export default function Dashboard({ onLogout }) {
                 <div style={{ color: '#8696a0', fontSize: 10, textAlign: 'right', marginTop: 3 }}>{editAbout.length}/140</div>
               </div>
 
-              <div>
-                <label style={{ color: '#8696a0', fontSize: 11, display: 'block', marginBottom: 4 }}>Phone Number</label>
-                <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} maxLength={15} placeholder="e.g. 9876543210"
-                  style={{ width: '100%', padding: '10px 13px', background: '#2a3942', border: '1px solid rgba(134,150,160,0.2)', borderRadius: 8, color: '#e9edef', fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
-                {editPhone && <div style={{ color: themeColor, fontSize: 11, marginTop: 3 }}>{formatPhoneWithCode(editPhone)}</div>}
+              <div style={{ padding: '10px 13px', background: '#1a2530', borderRadius: 8 }}>
+                <div style={{ color: '#8696a0', fontSize: 11 }}>Phone Number</div>
+                <div style={{ color: '#e9edef', fontSize: 14 }}>{user.phone || '—'}</div>
               </div>
 
               <div style={{ padding: '10px 13px', background: '#1a2530', borderRadius: 8 }}>

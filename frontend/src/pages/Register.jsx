@@ -102,8 +102,9 @@ export default function Register({ onLogin }) {
       if (!data.token) throw new Error('Registration failed: no token received')
       localStorage.setItem('token', data.token)
       localStorage.setItem('user', JSON.stringify(data.user || {}))
+      sessionStorage.setItem('e2e_pw', form.password) // used once to upload E2E key backup, then cleared
       onLogin?.()
-      // App route guard (/register → /dashboard) handles navigation once token is set
+      navigate('/set-name')
     } catch (err) {
       setError(err.message)
     } finally {

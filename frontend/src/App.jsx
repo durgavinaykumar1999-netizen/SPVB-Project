@@ -5,6 +5,7 @@ import Login from './pages/Login'
 import Register from './pages/Register'
 import Dashboard from './pages/Dashboard'
 import SetPassword from './pages/SetPassword'
+import SetName from './pages/SetName'
 import ForgotPassword from './pages/ForgotPassword'
 import LinkDevice from './pages/LinkDevice'
 
@@ -47,6 +48,7 @@ function App() {
       <Route path="/register"        element={token ? <Navigate to="/dashboard" replace /> : <Register onLogin={onLogin} />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/set-password"    element={token ? <SetPassword /> : <Navigate to="/login" replace />} />
+      <Route path="/set-name"        element={token ? <SetName /> : <Navigate to="/login" replace />} />
       <Route path="/dashboard"       element={token ? <Dashboard onLogout={onLogout} /> : <Navigate to="/login" replace />} />
       <Route path="/link-device"     element={<LinkDevice onLogin={onLogin} />} />
       <Route path="/"                element={<Navigate to={token ? '/dashboard' : '/login'} replace />} />

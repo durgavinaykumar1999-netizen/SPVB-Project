@@ -7,7 +7,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '0.0.0.0',
-    port: 1402,
+    port: 1403,
     proxy: {
       '/api': {
         target: BACKEND,

@@ -93,6 +93,7 @@ export default function Login({ onLogin }) {
       if (!data.token) throw new Error('Login failed: no token received')
       localStorage.setItem('token', data.token)
       localStorage.setItem('user', JSON.stringify(data.user || {}))
+      sessionStorage.setItem('e2e_pw', form.password) // used once to restore E2E key backup, then cleared
       onLogin?.()
       // App route guard (/login → /dashboard) handles navigation once token is set
     } catch (err) {
