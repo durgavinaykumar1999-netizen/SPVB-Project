@@ -1382,7 +1382,8 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
         email: saved ? c.email : undefined,
         phone: saved ? c.phone : undefined,
         cover_url: saved ? c.cover_url : '',
-        online_status: c.online_status, last_seen: c.last_seen,
+        online_status: saved ? c.online_status : undefined,
+        last_seen: saved ? c.last_seen : undefined,
         avatar_url: saved ? c.avatar_url : '',
         isGroup: false, isSpvb: true, isSaved: saved,
         _realName: realName,
@@ -1463,6 +1464,8 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
     if (c.id === SELF_CHAT_ID) return { label: 'Your personal notes', isOnline: true }
     if (c.isGroup) return { label: `${c.members?.length || 0} members`, isOnline: true }
     if (c.isInvite) return { label: c.email, isOnline: false }
+    // Only show online presence to saved contacts (privacy: unsaved users see nothing)
+    if (!c.isSaved) return { label: '', isOnline: false }
     const live = onlineMap[String(c.id)]
     const status = live?.online_status || c.online_status
     if (status === 'online') return { label: 'online', isOnline: true }

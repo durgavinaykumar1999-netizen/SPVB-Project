@@ -1256,10 +1256,14 @@ def get_conversation(contact_id: int, since_id: int = 0, cu: dict = Depends(get_
 
 @app.get("/users/online")
 def get_online_users(cu: dict = Depends(get_current_user)):
+    # Only expose presence for contacts the requester has saved (privacy)
+    saved = set(str(i) for i in mdb_get_saved_contacts(str(cu["user_id"])))
     user_status = mdb_get_user_status()
     now = datetime.now()
     result = {}
     for uid, info in user_status.items():
+        if uid not in saved:
+            continue
         diff = (now - _parse_dt(info["updated_at"])).total_seconds()
         if diff < 60:
             result[uid] = {**info, "online_status": "online"}
