@@ -275,7 +275,9 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
   const [nicknameInput, setNicknameInput] = useState('')
   const [nicknames, setNicknames] = useState({})
   const [blockedIds, setBlockedIds] = useState(new Set())
-  const [seenStatusUsers, setSeenStatusUsers] = useState(new Set()) // userIds whose statuses we've viewed
+  const [seenStatusUsers, setSeenStatusUsers] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('seen_status_users') || '[]')) } catch { return new Set() }
+  }) // userIds whose statuses we've viewed — persisted in localStorage
 
   /* ── Video status ── */
   const [statusPostType, setStatusPostType] = useState('text')
@@ -1006,7 +1008,29 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
             time: fmt(s.created_at), created_at: s.created_at,
           })
         })
-        setContactStatuses(Object.values(grouped))
+        const contactStatusList = Object.values(grouped)
+        setContactStatuses(contactStatusList)
+
+        // If a user posted a NEW status after we marked them seen, clear their seen flag
+        // so the new status shows as unread (compare latest status time vs seen timestamp)
+        const seenData = (() => { try { return JSON.parse(localStorage.getItem('seen_status_times') || '{}') } catch { return {} } })()
+        let changed = false
+        for (const group of contactStatusList) {
+          const uid = String(group.userId)
+          const latestTime = group.statuses.reduce((max, s) => s.created_at > max ? s.created_at : max, '')
+          if (seenData[uid] && latestTime > seenData[uid]) {
+            // New status posted after we last viewed — remove from seen set
+            setSeenStatusUsers(prev => {
+              const next = new Set(prev)
+              next.delete(uid)
+              localStorage.setItem('seen_status_users', JSON.stringify([...next]))
+              return next
+            })
+            delete seenData[uid]
+            changed = true
+          }
+        }
+        if (changed) localStorage.setItem('seen_status_times', JSON.stringify(seenData))
       } catch {}
     }
     fetchStatuses()
@@ -2463,7 +2487,15 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
       } catch {}
     }
     if (userId) {
-      setSeenStatusUsers(prev => new Set([...prev, String(userId)]))
+      setSeenStatusUsers(prev => {
+        const next = new Set([...prev, String(userId)])
+        localStorage.setItem('seen_status_users', JSON.stringify([...next]))
+        return next
+      })
+      // Record when we viewed so new statuses posted after this time show as unread
+      const seenTimes = (() => { try { return JSON.parse(localStorage.getItem('seen_status_times') || '{}') } catch { return {} } })()
+      seenTimes[String(userId)] = new Date().toISOString()
+      localStorage.setItem('seen_status_times', JSON.stringify(seenTimes))
     }
   }
 
