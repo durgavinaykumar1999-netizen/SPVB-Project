@@ -51,7 +51,13 @@ function LoginPage({ onLogin }) {
         body: JSON.stringify(form),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Login failed')
+      if (!res.ok) {
+        const detail = data.detail
+        const msg = Array.isArray(detail)
+          ? detail.map(d => d.msg?.replace('Value error, ', '') || JSON.stringify(d)).join(', ')
+          : (typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : 'Login failed')
+        throw new Error(msg)
+      }
       if (data.user.role !== 'admin') throw new Error('Admin access required')
       localStorage.setItem('token', data.token)
       localStorage.setItem('user', JSON.stringify(data.user))
@@ -181,7 +187,11 @@ function AdminDashboard({ user, onLogout }) {
       const res = editUser
         ? await apiFetch(`/api/users/${editUser.id}`, { method: 'PUT', body: JSON.stringify(body) })
         : await apiFetch('/api/users', { method: 'POST', body: JSON.stringify(body) })
-      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || 'Save failed') }
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        const detail = d.detail
+        throw new Error(Array.isArray(detail) ? detail.map(x => x.msg || JSON.stringify(x)).join(', ') : (typeof detail === 'string' ? detail : 'Save failed'))
+      }
       setEditUser(null); f.reset(); loadData()
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
