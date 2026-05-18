@@ -1465,14 +1465,20 @@ async def create_status(body: StatusRequest, cu: dict = Depends(get_current_user
 def get_statuses(cu: dict = Depends(get_current_user)):
     mdb_cleanup_expired_statuses()
     now = datetime.utcnow()
+    my_id = cu["user_id"]
+    # Only show statuses from contacts the requester has saved (+ own statuses)
+    saved_ids = set(mdb_get_saved_contacts(str(my_id)))
     all_statuses = mdb_get_statuses()
     users = {u["id"]: u for u in mdb_get_users()}
     result = []
     for s in all_statuses:
         if _parse_dt(s["expires_at"]) <= now:
             continue
+        # Include own statuses; skip other users not in saved contacts
+        if s["user_id"] != my_id and s["user_id"] not in saved_ids:
+            continue
         entry = dict(s)
-        if s["user_id"] == cu["user_id"]:
+        if s["user_id"] == my_id:
             viewers = []
             for uid in s.get("viewed_by", []):
                 u = users.get(uid)

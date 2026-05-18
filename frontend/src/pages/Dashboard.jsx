@@ -986,9 +986,10 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
           reactions: s.reactions || [],
         }))
         if (mine.length > 0) setStatusUpdates(mine)
-        // Group other users' statuses by user_id
+        // Group other users' statuses by user_id — only show saved contacts
+        const savedIds = new Set(JSON.parse(localStorage.getItem('saved_contacts') || '[]').map(String))
         const grouped = {}
-        list.filter(s => s.user_id !== myId).forEach(s => {
+        list.filter(s => s.user_id !== myId && savedIds.has(String(s.user_id))).forEach(s => {
           if (!grouped[s.user_id]) {
             grouped[s.user_id] = {
               userId: s.user_id,
