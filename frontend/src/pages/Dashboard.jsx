@@ -302,6 +302,58 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
   /* ── Settings toggles ── */
   const [notifSound, setNotifSound] = useState(() => localStorage.getItem('notif_sound') !== 'off')
   const notifSoundRef = useRef(localStorage.getItem('notif_sound') !== 'off')
+  const ringtoneRef   = useRef(null) // AudioContext loop for incoming call ringtone
+
+  // Play WhatsApp-style message notification ping
+  const _playNotifSound = () => {
+    if (!notifSoundRef.current) return
+    try {
+      const ctx = new AudioContext()
+      const buf = ctx.createBuffer(1, ctx.sampleRate * 0.35, ctx.sampleRate)
+      const ch = buf.getChannelData(0)
+      for (let i = 0; i < ch.length; i++) {
+        const t = i / ctx.sampleRate
+        ch[i] = Math.sin(2 * Math.PI * (t < 0.15 ? 880 : 1109) * t) * Math.exp(-t / 0.08) * 0.35
+      }
+      const src = ctx.createBufferSource()
+      src.buffer = buf; src.connect(ctx.destination); src.start()
+      setTimeout(() => ctx.close(), 1000)
+    } catch {}
+  }
+
+  // Play looping phone ringtone for incoming call
+  const _playRingtone = () => {
+    _stopRingtone()
+    try {
+      const ctx = new AudioContext()
+      ringtoneRef.current = ctx
+      const ring = () => {
+        if (!ringtoneRef.current) return
+        const sr = ctx.sampleRate
+        const buf = ctx.createBuffer(1, sr * 0.6, sr)
+        const ch = buf.getChannelData(0)
+        for (let i = 0; i < ch.length; i++) {
+          const t = i / sr
+          // Two-tone ring: 440Hz + 480Hz mixed (classic phone ring)
+          ch[i] = (Math.sin(2 * Math.PI * 440 * t) + Math.sin(2 * Math.PI * 480 * t)) *
+                  (t < 0.3 ? 1 : 0) * 0.28 // ring 0.3s, silent 0.3s
+        }
+        const src = ctx.createBufferSource()
+        const gain = ctx.createGain(); gain.gain.value = 0.7
+        src.buffer = buf; src.connect(gain); gain.connect(ctx.destination)
+        src.start()
+        src.onended = ring // loop
+      }
+      ring()
+    } catch {}
+  }
+
+  const _stopRingtone = () => {
+    if (ringtoneRef.current) {
+      try { ringtoneRef.current.close() } catch {}
+      ringtoneRef.current = null
+    }
+  }
   const [showLastSeen, setShowLastSeen] = useState(() => localStorage.getItem('show_last_seen') !== 'off')
   const [readReceipts, setReadReceipts] = useState(() => localStorage.getItem('read_receipts') !== 'off')
   const [chatTheme, setChatTheme] = useState(() => localStorage.getItem('chat_theme') || 'green')
@@ -552,24 +604,100 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
     setup()
   }, [user?.id])
 
-  // Listen for SW postMessage (notification click → open specific chat)
+  // Listen for SW postMessage — handles notification clicks, call alerts, push events
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
     const handler = (e) => {
-      if (e.data?.type === 'OPEN_CHAT' && e.data.contactId) {
-        setActiveId(Number(e.data.contactId) || e.data.contactId)
+      const msg = e.data
+      if (!msg?.type) return
+
+      if (msg.type === 'OPEN_CHAT' && msg.contactId) {
+        setActiveId(Number(msg.contactId) || msg.contactId)
+        return
+      }
+
+      if (msg.type === 'INCOMING_CALL_PUSH') {
+        // App is open (possibly backgrounded) — show in-app call UI + play ringtone
+        const fromId = parseInt(msg.from)
+        const fromC = spvbContactsRef.current.find(c => c.id === fromId)
+        const displayName = msg.callerName || fromC?.display_name || fromC?.username || `User ${fromId}`
+        setIncomingCall({
+          callType: msg.callType || 'voice',
+          from: fromId,
+          contact: {
+            id: fromId, name: displayName,
+            initials: displayName.slice(0, 2).toUpperCase(),
+            color: AVATAR_COLORS[fromId % AVATAR_COLORS.length],
+            avatar_url: fromC?.avatar_url || '',
+          },
+          sdp: null, // SDP arrives separately via WS once app is focused
+        })
+        _playRingtone()
+        return
+      }
+
+      if (msg.type === 'ANSWER_CALL') {
+        // User tapped Answer on the OS notification — app is now focused
+        const fromId = parseInt(msg.from)
+        const fromC = spvbContactsRef.current.find(c => c.id === fromId)
+        const displayName = fromC?.display_name || fromC?.username || `User ${fromId}`
+        setIncomingCall(prev => prev || {
+          callType: msg.callType || 'voice', from: fromId,
+          contact: { id: fromId, name: displayName, initials: displayName.slice(0, 2).toUpperCase(), color: AVATAR_COLORS[fromId % AVATAR_COLORS.length], avatar_url: fromC?.avatar_url || '' },
+          sdp: null,
+        })
+        return
+      }
+
+      if (msg.type === 'DECLINE_CALL') {
+        // User tapped Decline on the OS notification
+        wsRef.current?.send(JSON.stringify({ type: 'call_reject', target: String(msg.from) }))
+        setIncomingCall(null)
+        _stopRingtone()
+        return
+      }
+
+      if (msg.type === 'PUSH_MSG') {
+        // Background push arrived while app is open — play notification sound
+        _playNotifSound()
+        return
+      }
+
+      if (msg.type === 'RESUBSCRIBE' && msg.subscription) {
+        // Browser rotated push keys — re-register with server
+        const token = localStorage.getItem('token')
+        const sub = msg.subscription
+        fetch(apiUrl('/api/push/subscribe'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(sub),
+        }).catch(() => {})
+        return
       }
     }
     navigator.serviceWorker.addEventListener('message', handler)
     return () => navigator.serviceWorker.removeEventListener('message', handler)
-  }, [])
+  }, []) // eslint-disable-line
 
-  // Open chat from URL param (e.g. /?chat=123 from push click on new tab)
+  // Open chat or call from URL param (e.g. /?chat=123 or /?call=456 from push click)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const chatId = params.get('chat')
+    const callId = params.get('call')
     if (chatId && user?.id) {
       setActiveId(Number(chatId) || chatId)
+      window.history.replaceState({}, '', '/')
+    }
+    if (callId && user?.id) {
+      // App was opened by tapping a call notification — show incoming call UI
+      const fromId = parseInt(callId)
+      const fromC = spvbContactsRef.current.find(c => c.id === fromId)
+      const displayName = fromC?.display_name || fromC?.username || `User ${fromId}`
+      setIncomingCall(prev => prev || {
+        callType: 'voice', from: fromId,
+        contact: { id: fromId, name: displayName, initials: displayName.slice(0, 2).toUpperCase(), color: AVATAR_COLORS[fromId % AVATAR_COLORS.length], avatar_url: fromC?.avatar_url || '' },
+        sdp: null,
+      })
       window.history.replaceState({}, '', '/')
     }
   }, [user?.id])
@@ -1441,12 +1569,14 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
 
   const acceptCall = () => {
     if (!incomingCall) return
+    _stopRingtone()
     setActiveCall({ type: incomingCall.callType, contact: incomingCall.contact, role: 'callee', offerSdp: incomingCall.sdp })
     setIncomingCall(null)
   }
 
   const declineCall = () => {
     if (!incomingCall) return
+    _stopRingtone()
     wsRef.current?.send(JSON.stringify({ type: 'call_reject', target: String(incomingCall.from) }))
     saveCallLog({ contact_id: incomingCall.from, call_type: incomingCall.callType || 'voice', direction: 'incoming', status: 'rejected', duration: 0 })
     setIncomingCall(null)
@@ -2477,11 +2607,13 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
         },
         sdp: data.sdp,
       })
+      _playRingtone() // start ringing when call comes in via WS
     }
 
     if (data.type === 'call_end' && incomingCall && String(data.from) === String(incomingCall.from)) {
       saveCallLog({ contact_id: incomingCall.from, call_type: incomingCall.callType || 'voice', direction: 'incoming', status: 'missed', duration: 0 })
       setIncomingCall(null)
+      _stopRingtone()
     }
 
     if (data.type === 'chat_message') {
@@ -2579,23 +2711,7 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
           }
 
           // Notification sound
-          if (notifSoundRef.current) {
-            try {
-              const ctx = new AudioContext()
-              const buf = ctx.createBuffer(1, ctx.sampleRate * 0.35, ctx.sampleRate)
-              const ch = buf.getChannelData(0)
-              for (let i = 0; i < ch.length; i++) {
-                const t = i / ctx.sampleRate
-                const freq = t < 0.15 ? 880 : 1109
-                ch[i] = Math.sin(2 * Math.PI * freq * t) * Math.exp(-t / 0.08) * 0.35
-              }
-              const src = ctx.createBufferSource()
-              src.buffer = buf
-              src.connect(ctx.destination)
-              src.start()
-              setTimeout(() => ctx.close(), 1000)
-            } catch {}
-          }
+          _playNotifSound()
         }
         // Wait for decryption if needed, then show toast
         if (rawContent.startsWith('__e2e__|')) {

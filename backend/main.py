@@ -796,13 +796,32 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
 
     await ws_manager.connect(user_id, websocket)
     from_user = payload.get("username", ""), payload.get("email", "")
+    caller_display = payload.get("display_name") or payload.get("username", f"User {user_id}")
     mdb_set_status(user_id, from_user[0], from_user[1], "online")
     try:
         while True:
             data = await websocket.receive_json()
             target = str(data.get("target", ""))
-            if target:
-                await ws_manager.send(target, {**data, "from": str(user_id)})
+            if not target:
+                continue
+            msg_type = data.get("type", "")
+            await ws_manager.send(target, {**data, "from": str(user_id)})
+
+            # ── Push notification for calls (fires even if target tab is open but backgrounded) ──
+            if msg_type == "call_offer":
+                call_type = data.get("callType", "voice")
+                icon = "📹" if call_type == "video" else "📞"
+                threading.Thread(
+                    target=_send_push,
+                    args=(
+                        int(target),
+                        f"{icon} Incoming {call_type} call",
+                        f"{caller_display} is calling you",
+                        {"type": "call", "from": str(user_id), "callType": call_type,
+                         "callerName": caller_display},
+                    ),
+                    daemon=True,
+                ).start()
     except WebSocketDisconnect:
         ws_manager.disconnect(str(user_id))
         mdb_set_status(user_id, from_user[0], from_user[1], "offline")

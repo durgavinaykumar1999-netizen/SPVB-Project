@@ -1,4 +1,4 @@
-const CACHE = 'spvb-v4'
+const CACHE = 'spvb-v5'
 const STATIC = ['/', '/index.html', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png', '/manifest.json']
 
 self.addEventListener('install', e => {
@@ -31,41 +31,115 @@ self.addEventListener('fetch', e => {
   )
 })
 
-// Push received from server — show OS notification (Android top bar, desktop corner)
+// ── Push notification received ────────────────────────────────────────────────
 self.addEventListener('push', e => {
-  let payload = { title: 'SPVB', body: 'New message' }
+  let payload = { title: 'SPVB', body: 'New message', data: {} }
   try { payload = e.data.json() } catch {}
 
-  const title = payload.title || 'SPVB'
-  const fromId = payload.data?.from
+  const type     = payload.data?.type || 'message'
+  const fromId   = payload.data?.from
+  const isCall   = type === 'call'
 
-  e.waitUntil(
-    self.registration.showNotification(title, {
-      body: payload.body || 'You have a new message',
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
-      tag: `spvb-msg-${fromId || 'msg'}`,
-      renotify: true,
-      vibrate: [200, 100, 200],
-      data: payload.data || {},
-      actions: [
-        { action: 'open', title: '💬 Open' },
-        { action: 'dismiss', title: 'Dismiss' },
-      ],
-    })
-  )
+  if (isCall) {
+    // ── Incoming call — persistent, full-screen style ──
+    const callType   = payload.data?.callType || 'voice'
+    const callerName = payload.data?.callerName || payload.title || 'Someone'
+    const icon       = callType === 'video' ? '📹' : '📞'
+
+    e.waitUntil(
+      // Tell all open tabs to show the call ring UI and play ringtone
+      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+        clients.forEach(c => c.postMessage({ type: 'INCOMING_CALL_PUSH', from: fromId, callerName, callType }))
+      }).then(() =>
+        self.registration.showNotification(`${icon} ${callerName} is calling…`, {
+          body: `Incoming ${callType} call — tap to answer`,
+          icon: '/icon-192.png',
+          badge: '/icon-192.png',
+          tag: `spvb-call-${fromId}`,
+          renotify: true,
+          requireInteraction: true,          // stays on screen until dismissed
+          silent: false,
+          vibrate: [500, 200, 500, 200, 500, 200, 500], // WhatsApp-style ring pattern
+          data: { ...payload.data, notifType: 'call' },
+          actions: [
+            { action: 'answer', title: '✅ Answer' },
+            { action: 'decline', title: '❌ Decline' },
+          ],
+        })
+      )
+    )
+  } else {
+    // ── Regular message notification ──
+    e.waitUntil(
+      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+        // If app is visible and focused, just ping it — no OS notification needed
+        const focused = clients.find(c => c.visibilityState === 'visible' && c.focused)
+        if (focused) {
+          focused.postMessage({ type: 'PUSH_MSG', from: fromId, body: payload.body })
+          return // page will handle sound itself
+        }
+        // App in background or closed — show OS notification + message app tab
+        clients.forEach(c => c.postMessage({ type: 'PUSH_MSG', from: fromId, body: payload.body }))
+        return self.registration.showNotification(payload.title || 'SPVB', {
+          body: payload.body || 'New message',
+          icon: '/icon-192.png',
+          badge: '/icon-192.png',
+          tag: `spvb-msg-${fromId || 'msg'}`,
+          renotify: true,
+          silent: false,
+          vibrate: [200, 100, 200],
+          data: { ...payload.data, notifType: 'message' },
+          actions: [
+            { action: 'open',    title: '💬 Reply' },
+            { action: 'dismiss', title: 'Dismiss' },
+          ],
+        })
+      })
+    )
+  }
 })
 
-// Notification clicked — focus app tab and navigate to the chat
+// ── Notification clicked ──────────────────────────────────────────────────────
 self.addEventListener('notificationclick', e => {
   e.notification.close()
-  if (e.action === 'dismiss') return
 
-  const fromId = e.notification.data?.from
+  const data      = e.notification.data || {}
+  const fromId    = data.from
+  const notifType = data.notifType || 'message'
+  const action    = e.action
 
+  if (action === 'dismiss') return
+
+  if (notifType === 'call') {
+    if (action === 'decline') {
+      // Decline: tell open tabs to reject the call
+      e.waitUntil(
+        self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+          clients.forEach(c => c.postMessage({ type: 'DECLINE_CALL', from: fromId }))
+        })
+      )
+      return
+    }
+    // Answer: focus/open app with call context
+    e.waitUntil(
+      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+        const callUrl = fromId ? `/?call=${fromId}` : '/'
+        for (const client of list) {
+          if (client.url.startsWith(self.location.origin) && 'focus' in client) {
+            client.focus()
+            client.postMessage({ type: 'ANSWER_CALL', from: fromId, callType: data.callType })
+            return
+          }
+        }
+        return self.clients.openWindow(callUrl)
+      })
+    )
+    return
+  }
+
+  // Regular message — open chat
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
-      // Focus existing open tab
       for (const client of list) {
         if (client.url.startsWith(self.location.origin) && 'focus' in client) {
           client.focus()
@@ -73,9 +147,20 @@ self.addEventListener('notificationclick', e => {
           return
         }
       }
-      // No tab open — open one and pass chat ID via URL param
-      const url = fromId ? `/?chat=${fromId}` : '/'
-      return self.clients.openWindow(url)
+      return self.clients.openWindow(fromId ? `/?chat=${fromId}` : '/')
     })
+  )
+})
+
+// ── Push subscription change (browser auto-rotates keys) ─────────────────────
+self.addEventListener('pushsubscriptionchange', e => {
+  e.waitUntil(
+    self.registration.pushManager.subscribe({ userVisibleOnly: true })
+      .then(sub => {
+        // Notify all tabs to re-register subscription with server
+        return self.clients.matchAll({ type: 'window' }).then(clients => {
+          clients.forEach(c => c.postMessage({ type: 'RESUBSCRIBE', subscription: sub.toJSON() }))
+        })
+      })
   )
 })
