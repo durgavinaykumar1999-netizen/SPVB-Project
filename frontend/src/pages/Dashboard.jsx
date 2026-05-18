@@ -492,7 +492,8 @@ export default function Dashboard({ onLogout }) {
       const decrypted = await Promise.all(msgs.map(async m => {
         if (!String(m.text || '').startsWith('__e2e__|')) return m
         const plain = await decryptMessage(m.text, key, theirPub)
-        return { ...m, text: plain }
+        const stillCipher = String(plain || '').startsWith('__e2e__|')
+        return { ...m, text: plain, _encrypted: stillCipher }
       }))
       setLiveMessages(p => ({ ...p, [contactId]: decrypted }))
     }
@@ -905,7 +906,11 @@ export default function Dashboard({ onLogout }) {
 
   // Keep refs fresh
   useEffect(() => { spvbContactsRef.current = spvbContacts }, [spvbContacts])
-  useEffect(() => { activeIdRef.current = activeId }, [activeId])
+  useEffect(() => {
+    activeIdRef.current = activeId
+    // Retry decrypting any locked messages whenever user opens a conversation
+    if (activeId && e2eReadyRef.current) setTimeout(() => decryptAllPending(e2ePrivKeyRef.current), 100)
+  }, [activeId])
   useEffect(() => { notifSoundRef.current = notifSound }, [notifSound])
 
   // Update page title + PWA home-screen icon badge whenever unread count changes
@@ -1020,9 +1025,12 @@ export default function Dashboard({ onLogout }) {
       if (!key) return msgs  // keys never loaded; return as-is (render guard covers display)
       const theirPub = await getContactPubKey(contactId)
       return Promise.all(msgs.map(async (m) => {
-        if (!m._encrypted) return m
+        // Retry if still cipher text (decryptMessage returns original cipher on failure)
+        const needsDecrypt = m._encrypted || String(m.text || '').startsWith('__e2e__|')
+        if (!needsDecrypt) return m
         const plain = await decryptMessage(m.text, key, theirPub)
-        return { ...m, text: plain, _encrypted: false }
+        const stillCipher = String(plain || '').startsWith('__e2e__|')
+        return { ...m, text: plain, _encrypted: stillCipher }
       }))
     }
 
@@ -3608,6 +3616,7 @@ export default function Dashboard({ onLogout }) {
                         ? <div className="wa-bubble-text" style={{ color: '#8696a0', fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
                             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                             Encrypted message
+                            <button onClick={() => decryptAllPending(e2ePrivKeyRef.current)} style={{ marginLeft: 4, background: 'none', border: 'none', color: '#8696a0', cursor: 'pointer', fontSize: 11, textDecoration: 'underline', padding: 0 }}>Retry</button>
                           </div>
                         : <div className="wa-bubble-text">{m.text}</div>
                     )}

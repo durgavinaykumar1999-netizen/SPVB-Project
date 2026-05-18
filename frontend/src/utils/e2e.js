@@ -181,8 +181,8 @@ export async function encryptMessage(plaintext, myPrivateKey, theirPublicKeyJwk)
  */
 export async function decryptMessage(ciphertext, myPrivateKey, theirPublicKeyJwk) {
   if (!ciphertext?.startsWith(PREFIX)) return ciphertext // not encrypted, pass through
-  if (!myPrivateKey) return '🔒 Encrypted (key not loaded)'
-  if (!theirPublicKeyJwk) return '🔒 Encrypted (contact key missing)'
+  if (!myPrivateKey) return ciphertext // keep cipher, retry when key loads
+  if (!theirPublicKeyJwk) return ciphertext // keep cipher, retry when contact key fetched
   try {
     const parts = ciphertext.split('|')
     if (parts.length !== 3) return '🔒 Invalid message format'
@@ -193,7 +193,7 @@ export async function decryptMessage(ciphertext, myPrivateKey, theirPublicKeyJwk
     const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, sharedKey, ct)
     return new TextDecoder().decode(plainBuf)
   } catch {
-    return '🔒 Could not decrypt'
+    return ciphertext // keep original cipher so caller can retry when key is ready
   }
 }
 
