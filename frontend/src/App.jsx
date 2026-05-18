@@ -8,51 +8,81 @@ import SetPassword from './pages/SetPassword'
 import SetName from './pages/SetName'
 import ForgotPassword from './pages/ForgotPassword'
 import LinkDevice from './pages/LinkDevice'
+import AppLock, { useAppLock } from './components/AppLock'
+import { registerBiometric, isBiometricSupported } from './utils/biometric'
 
 function App() {
   const [splashDone, setSplashDone] = useState(false)
   const [token, setToken] = useState(() => {
     const t = localStorage.getItem('token')
-    // Reject stale placeholder strings written by failed requests
     return (t && t !== 'null' && t !== 'undefined') ? t : null
+  })
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('user') || 'null') } catch { return null }
   })
   const navigate = useNavigate()
 
-  // Called by Login/Register after storing token in localStorage
+  const { locked, unlock, bioSupported, bioRegistered, setBioRegistered, lockReady } = useAppLock(user)
+
   const onLogin = useCallback(() => {
     const t = localStorage.getItem('token')
     setToken((t && t !== 'null' && t !== 'undefined') ? t : null)
+    try { setUser(JSON.parse(localStorage.getItem('user') || 'null')) } catch {}
   }, [])
 
-  // Called by Dashboard on logout
   const onLogout = useCallback(() => {
     localStorage.clear()
+    sessionStorage.clear()
     setToken(null)
+    setUser(null)
     navigate('/login')
   }, [navigate])
 
-  // Catch any external token changes (e.g. another tab logs out)
   useEffect(() => {
-    const sync = () => setToken(localStorage.getItem('token'))
+    const sync = () => {
+      setToken(localStorage.getItem('token'))
+      try { setUser(JSON.parse(localStorage.getItem('user') || 'null')) } catch {}
+    }
     window.addEventListener('storage', sync)
     return () => window.removeEventListener('storage', sync)
   }, [])
 
-  if (!splashDone) {
-    return <SplashScreen onDone={() => setSplashDone(true)} />
+  const handleRegisterBiometric = async () => {
+    if (!user) return
+    try {
+      await registerBiometric(user.id, user.display_name || user.username)
+      setBioRegistered(true)
+    } catch (err) {
+      if (err.name !== 'NotAllowedError') console.warn('Biometric registration failed', err)
+    }
   }
 
+  if (!splashDone) return <SplashScreen onDone={() => setSplashDone(true)} />
+
   return (
-    <Routes>
-      <Route path="/login"           element={token ? <Navigate to="/dashboard" replace /> : <Login onLogin={onLogin} />} />
-      <Route path="/register"        element={token ? <Navigate to="/dashboard" replace /> : <Register onLogin={onLogin} />} />
-      <Route path="/forgot-password" element={<ForgotPassword />} />
-      <Route path="/set-password"    element={token ? <SetPassword /> : <Navigate to="/login" replace />} />
-      <Route path="/set-name"        element={token ? <SetName /> : <Navigate to="/login" replace />} />
-      <Route path="/dashboard"       element={token ? <Dashboard onLogout={onLogout} /> : <Navigate to="/login" replace />} />
-      <Route path="/link-device"     element={<LinkDevice onLogin={onLogin} />} />
-      <Route path="/"                element={<Navigate to={token ? '/dashboard' : '/login'} replace />} />
-    </Routes>
+    <>
+      {/* App-level biometric lock — covers entire app when triggered */}
+      {token && lockReady && locked && (
+        <AppLock
+          user={user}
+          onUnlock={unlock}
+          bioSupported={bioSupported}
+          bioRegistered={bioRegistered}
+          onRegister={handleRegisterBiometric}
+        />
+      )}
+
+      <Routes>
+        <Route path="/login"           element={token ? <Navigate to="/dashboard" replace /> : <Login onLogin={onLogin} />} />
+        <Route path="/register"        element={token ? <Navigate to="/dashboard" replace /> : <Register onLogin={onLogin} />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/set-password"    element={token ? <SetPassword /> : <Navigate to="/login" replace />} />
+        <Route path="/set-name"        element={token ? <SetName /> : <Navigate to="/login" replace />} />
+        <Route path="/dashboard"       element={token ? <Dashboard onLogout={onLogout} bioRegistered={bioRegistered} onRegisterBiometric={handleRegisterBiometric} bioSupported={bioSupported} /> : <Navigate to="/login" replace />} />
+        <Route path="/link-device"     element={<LinkDevice onLogin={onLogin} />} />
+        <Route path="/"                element={<Navigate to={token ? '/dashboard' : '/login'} replace />} />
+      </Routes>
+    </>
   )
 }
 

@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom'
 import { silentlyRefreshGoogleTokens, syncContactsWithToken, isGmailTokenValid, storeGmailToken, requestAllGooglePermissions } from '../utils/googleTokens'
 import { wsUrl, apiUrl } from '../utils/api'
 import { getOrCreateKeyPair, encryptMessage, decryptMessage, exportKeyBackup, importKeyBackup } from '../utils/e2e'
+import { authenticateBiometric, hasBiometricRegistered } from '../utils/biometric'
 import CallScreen from '../components/CallScreen'
 import IncomingCallBanner from '../components/IncomingCallBanner'
 import AddContactModal from '../components/AddContactModal'
@@ -160,7 +161,7 @@ function parseSpecialContent(text) {
 
 const INIT_BOT_MSGS = [{ id: 1, text: "Hello! I'm SPVB AI Assistant. Ask me anything! 🤖", sent: false, time: 'Just now', read: true }]
 
-export default function Dashboard({ onLogout }) {
+export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onRegisterBiometric, bioSupported: _bioSupported }) {
   const navigate = useNavigate()
   const [user, setUser] = useState(() => {
     try {
@@ -2133,11 +2134,11 @@ export default function Dashboard({ onLogout }) {
   const isChatLocked = activeId != null && typeof activeId === 'number' &&
     lockedChats.has(String(activeId)) && !chatUnlocked.has(String(activeId))
 
-  // Check WebAuthn/biometric availability once
+  // Check biometric availability — show button only if registered AND supported
   useEffect(() => {
     if (window.PublicKeyCredential) {
       PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable?.()
-        .then(ok => setBiometricAvail(ok))
+        .then(ok => setBiometricAvail(ok && hasBiometricRegistered()))
         .catch(() => setBiometricAvail(false))
     }
   }, [])
@@ -2170,23 +2171,16 @@ export default function Dashboard({ onLogout }) {
   }
 
   const handleBiometric = async () => {
+    if (!hasBiometricRegistered()) return // no credential — PIN handles it
     try {
-      const challenge = new Uint8Array(32)
-      window.crypto.getRandomValues(challenge)
-      await navigator.credentials.get({
-        publicKey: {
-          challenge,
-          timeout: 60000,
-          userVerification: 'required',
-          rpId: window.location.hostname,
-        },
-      })
+      await authenticateBiometric()
       const cid = String(activeId)
       setChatUnlocked(s => new Set([...s, cid]))
     } catch (err) {
-      if (err.name !== 'NotAllowedError') {
-        // Fallback: if WebAuthn fails (no credential registered), let PIN handle it
+      if (err.code === 'LOCKED_OUT') {
+        // Show lockout in UI — do nothing, PIN is still available
       }
+      // USER_CANCELLED or AUTH_FAILED — let PIN handle it
     }
   }
 
@@ -4844,6 +4838,47 @@ export default function Dashboard({ onLogout }) {
                       </div>
                     </div>
                   ))}
+
+                  {/* ── App Lock / Biometric Section ── */}
+                  <div style={{ marginTop: 24, marginBottom: 8, color: dm.subtext, fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>App Lock</div>
+                  <div style={{ background: dm.bubble, borderRadius: 14, overflow: 'hidden', border: `1px solid ${dm.border}` }}>
+                    <div style={{ padding: '16px 16px 12px', borderBottom: `1px solid ${dm.border}` }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                        <div style={{ width: 40, height: 40, borderRadius: 10, background: `${themeColor}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={themeColor} strokeWidth="2" strokeLinecap="round"><path d="M12 11c0 3.517-1.009 6.799-2.753 9.571"/><path d="M7.558 13.531A13.913 13.913 0 008 11a4 4 0 118 0"/><path d="M4.534 11a7.5 7.5 0 0115 0c0 1.017-.07 2.019-.203 3"/><path d="M2.068 11.015C2.023 10.68 2 10 2 10a10 10 0 1120 0c0 .342-.023.68-.068 1.015"/></svg>
+                        </div>
+                        <div>
+                          <div style={{ color: dm.text, fontSize: 14, fontWeight: 600 }}>Biometric App Lock</div>
+                          <div style={{ color: dm.subtext, fontSize: 12, marginTop: 2 }}>
+                            {hasBiometricRegistered() ? '✓ Active — fingerprint / Face ID / Windows Hello' : 'Protect the entire app with your device biometrics'}
+                          </div>
+                        </div>
+                      </div>
+                      {hasBiometricRegistered() ? (
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <div style={{ flex: 1, padding: '8px 12px', background: `${themeColor}18`, borderRadius: 8, color: themeColor, fontSize: 12, textAlign: 'center', fontWeight: 600 }}>
+                            🔒 Locks after 5 min idle or 30s in background
+                          </div>
+                          <button onClick={() => { if(window.confirm('Remove biometric lock? Your app will no longer lock automatically.')) { import('../utils/biometric').then(m => { m.clearBiometricRegistration(); window.location.reload() }) } }}
+                            style={{ padding: '8px 14px', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, color: '#ef4444', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }}>
+                            Remove
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { if(onRegisterBiometric) onRegisterBiometric() }}
+                          style={{ width: '100%', padding: '11px', background: themeColor, border: 'none', borderRadius: 10, color: 'white', fontWeight: 600, fontSize: 14, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                          Enable Biometric Lock
+                        </button>
+                      )}
+                    </div>
+                    <div style={{ padding: '12px 16px', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={dm.subtext} strokeWidth="2" style={{ flexShrink: 0, marginTop: 1 }}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                      <div style={{ color: dm.subtext, fontSize: 11.5, lineHeight: 1.5 }}>
+                        Your biometric data never leaves your device. SPVB uses your device's secure hardware (TPM / Secure Enclave) — we only receive a cryptographic proof of authentication.
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
 

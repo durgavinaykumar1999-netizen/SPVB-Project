@@ -944,6 +944,28 @@ def login(req: LoginRequest):
         return {"token": token, "user": {"id": u["id"], "username": u["username"], "email": u["email"], "phone": u.get("phone", ""), "role": u.get("role", "user"), "display_name": u.get("display_name", u["username"]), "avatar_url": u.get("avatar_url", ""), "cover_url": u.get("cover_url", "")}}
     raise HTTPException(status_code=401, detail="Incorrect password")
 
+@app.post("/auth/verify-password")
+def verify_password_endpoint(body: dict, cu: dict = Depends(get_current_user)):
+    """Verify the current user's password — used by the app lock screen fallback."""
+    pw = body.get("password", "")
+    if not pw:
+        raise HTTPException(status_code=400, detail="password required")
+    user_id = cu["user_id"]
+    # Admin has no DB record — compare directly to env
+    if user_id == 0:
+        if pw == os.getenv("ADMIN_PASSWORD", ""):
+            return {"ok": True}
+        raise HTTPException(status_code=401, detail="Wrong password")
+    u = mdb_get_user_by_id(user_id)
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    stored = u.get("password", "")
+    if not stored:
+        raise HTTPException(status_code=400, detail="Account uses Google Sign-In — no password set")
+    if not verify_password(pw, stored):
+        raise HTTPException(status_code=401, detail="Wrong password")
+    return {"ok": True}
+
 @app.post("/auth/google", response_model=TokenResponse)
 def google_login(req: GoogleAuthRequest):
     try:
