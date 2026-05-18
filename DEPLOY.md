@@ -14,25 +14,27 @@ HTTPS is automatic on both platforms → push notifications work on mobile.
 
 1. Go to https://render.com → Sign up / Log in
 2. Click **New → Web Service**
-3. Connect your GitHub repo (push this project to GitHub first)
+3. Connect your GitHub repo
 4. Settings:
    - **Root Directory**: `backend`
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
    - **Python version**: 3.10+
-5. Add these **Environment Variables** in Render dashboard:
+5. Add these **Environment Variables** in the Render dashboard (use your own values — never paste real credentials here):
    ```
-   MONGODB_URI=mongodb+srv://...
-   JWT_SECRET=your-secret
+   MONGODB_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/SPVB-CHAT
+   JWT_SECRET=<generate a random 32+ char string>
    JWT_ALGORITHM=HS256
-   ADMIN_EMAIL=adminspvb@gmail.com
-   ADMIN_PASSWORD=6c1243f8e2e1d167576607ec1a1e7ab4
-   CLOUDINARY_URL=cloudinary://...
-   VAPID_PUBLIC_KEY=BESgcXMBi2T6zG0JKltIB9HuOxjp21hNUBWRXDy5t1qOWfJbuK6iB0iYwKYbwvPOUyl67A1keeL_qYDA36jtoWo
-   VAPID_PRIVATE_KEY=MHcCAQEEINc3BNc4xyCDMZe0XjBodEurLY3db9zAE4g1jfeJravHoAoGCCqGSM49AwEHoUQDQgAERKBxcwGLZPrMbQkqW0gH0e47GOnbWE1QFZFcPLm3Wo5Z8lu4rqIHSJjAphvC885TKXrsDWR54v+pgMDfqO2hag==
-   VAPID_EMAIL=mailto:adminspvb@gmail.com
+   ADMIN_EMAIL=<your admin email>
+   ADMIN_PASSWORD=<your admin password>
+   CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>
+   VAPID_PUBLIC_KEY=<your generated VAPID public key>
+   VAPID_PRIVATE_KEY=<your generated VAPID private key>
+   VAPID_EMAIL=mailto:<your email>
    UPLOADS_DIR=/tmp/uploads
    ```
+   > **Generate VAPID keys for free** — see the command in `backend/.env.example`
+
 6. Deploy → copy your URL e.g. `https://spvb-backend.onrender.com`
 
 ---
@@ -48,7 +50,7 @@ HTTPS is automatic on both platforms → push notifications work on mobile.
    - **Output Directory**: `dist`
 4. Add **Environment Variable**:
    ```
-   VITE_BACKEND_URL=https://spvb-backend.onrender.com
+   VITE_BACKEND_URL=https://your-render-backend-url.onrender.com
    ```
 5. Deploy → your app is live at `https://your-project.vercel.app`
 
@@ -57,14 +59,14 @@ HTTPS is automatic on both platforms → push notifications work on mobile.
 ## Step 3 — Push Notifications on Mobile
 
 Once deployed to HTTPS (Vercel + Render):
-1. Open `https://your-project.vercel.app` on your phone
+1. Open your Vercel URL on your phone
 2. Install as PWA: browser menu → "Add to Home Screen"
 3. Open the app → it will ask for notification permission → **Allow**
 4. Done! You'll now receive notifications in the Android/iOS notification bar
 
 ---
 
-## Local Development (unchanged)
+## Local Development
 
 ```bash
 start-all.bat
