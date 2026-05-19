@@ -3503,18 +3503,22 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
                 const acStGroup = acHasSt ? contactStatuses.find(g => String(g.userId) === acId) : null
                 return (
                   <div
-                    onClick={acHasSt ? (e) => {
-                      e.stopPropagation()
-                      recordStatusView(acStGroup.statuses.map(s => s.id), acId)
-                      setViewingStatusGroups([acStGroup])
-                      setViewingStatusStart(0)
-                    } : undefined}
-                    title={acHasSt ? (acSeenSt ? 'Status (viewed)' : 'New status — tap to view') : undefined}
+                    onClick={(e) => {
+                      if (acHasSt) {
+                        e.stopPropagation()
+                        recordStatusView(acStGroup.statuses.map(s => s.id), acId)
+                        setViewingStatusGroups([acStGroup])
+                        setViewingStatusStart(0)
+                      } else if (activeContact?.id !== 'bot' && !activeContact?.isInvite) {
+                        setShowContactInfo(true)
+                      }
+                    }}
+                    title={acHasSt ? (acSeenSt ? 'Status (viewed)' : 'New status — tap to view') : 'View profile'}
                     style={{
                       flexShrink: 0, width: 44, height: 44, borderRadius: '50%', boxSizing: 'border-box',
                       background: acHasSt ? (acSeenSt ? 'rgba(134,150,160,0.45)' : `conic-gradient(${themeColor} 0%, #25d366 100%)`) : 'transparent',
                       padding: acHasSt ? 2 : 0,
-                      cursor: acHasSt ? 'pointer' : 'default',
+                      cursor: 'pointer',
                     }}
                   >
                     <div style={{ width: '100%', height: '100%', borderRadius: '50%', background: activeContact?.color, border: acHasSt ? '2px solid #202c33' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: 15, overflow: 'hidden', boxSizing: 'border-box' }}>
@@ -3986,9 +3990,9 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
             </div>
             <style>{`@keyframes recPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.8)} }`}</style>
 
-            {/* Contact Info Panel */}
+            {/* Contact Info Panel — slides in from the left */}
             {showContactInfo && activeContact && activeContact.id !== 'bot' && !activeContact.isInvite && (
-              <div className="contact-info-panel" style={{ position: 'absolute', top: 0, right: 0, width: 360, height: '100%', background: '#111b21', borderLeft: '1px solid rgba(134,150,160,0.12)', display: 'flex', flexDirection: 'column', zIndex: 50, overflowY: 'auto' }}>
+              <div className="contact-info-panel" style={{ position: 'absolute', top: 0, left: 0, width: 360, height: '100%', background: '#111b21', borderRight: '1px solid rgba(134,150,160,0.12)', display: 'flex', flexDirection: 'column', zIndex: 50, overflowY: 'auto', animation: 'slideInLeft 0.22s cubic-bezier(0.4,0,0.2,1)' }}>
                 {/* Panel header */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '16px 20px', background: '#202c33', borderBottom: '1px solid rgba(134,150,160,0.1)' }}>
                   <button onClick={() => setShowContactInfo(false)} style={{ background: 'none', border: 'none', color: '#8696a0', cursor: 'pointer', padding: 4, display: 'flex' }}>
