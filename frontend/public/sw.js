@@ -1,4 +1,4 @@
-const CACHE = 'spvb-v6'
+const CACHE = 'spvb-v7'
 const STATIC = ['/', '/index.html', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png', '/manifest.json', '/sw.js']
 
 self.addEventListener('install', e => {
@@ -31,25 +31,27 @@ self.addEventListener('fetch', e => {
   )
 })
 
+// ── Notification grouping — track unread per sender ──────────────────────────
+const _unread = {}   // { fromId: { count, lastBody, title } }
+
 // ── Push notification received ────────────────────────────────────────────────
 self.addEventListener('push', e => {
   let payload = { title: 'SPVB', body: 'New message', data: {} }
   try { payload = e.data.json() } catch {}
 
   const type     = payload.data?.type || 'message'
-  const fromId   = payload.data?.from
+  const fromId   = String(payload.data?.from || 'msg')
   const isCall   = type === 'call'
 
   if (isCall) {
-    // ── Incoming call — persistent, full-screen style ──
     const callType   = payload.data?.callType || 'voice'
     const callerName = payload.data?.callerName || payload.title || 'Someone'
     const icon       = callType === 'video' ? '📹' : '📞'
 
     e.waitUntil(
-      // Tell all open tabs to show the call ring UI and play ringtone
       self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
-        clients.forEach(c => c.postMessage({ type: 'INCOMING_CALL_PUSH', from: fromId, callerName, callType }))
+        // Tell open tabs to show call ring UI
+        clients.forEach(c => c.postMessage({ type: 'INCOMING_CALL_PUSH', from: fromId, callerName, callType, sdp: payload.data?.sdp }))
       }).then(() =>
         self.registration.showNotification(`${icon} ${callerName} is calling…`, {
           body: `Incoming ${callType} call — tap to answer`,
@@ -57,9 +59,9 @@ self.addEventListener('push', e => {
           badge: '/icon-192.png',
           tag: `spvb-call-${fromId}`,
           renotify: true,
-          requireInteraction: true,          // stays on screen until dismissed
+          requireInteraction: true,
           silent: false,
-          vibrate: [500, 200, 500, 200, 500, 200, 500], // WhatsApp-style ring pattern
+          vibrate: [500, 200, 500, 200, 500, 200, 500],
           data: { ...payload.data, notifType: 'call' },
           actions: [
             { action: 'answer', title: '✅ Answer' },
@@ -68,59 +70,76 @@ self.addEventListener('push', e => {
         })
       )
     )
-  } else {
-    // ── Regular message notification ──
-    e.waitUntil(
-      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
-        // Always ping open tabs so they can update UI / play in-app sound
-        clients.forEach(c => c.postMessage({ type: 'PUSH_MSG', from: fromId, body: payload.body }))
-
-        // Always show OS notification — Android PWA needs this even when app is "visible"
-        // because visibility APIs are unreliable on mobile PWAs in background/lock screen
-        return self.registration.showNotification(payload.title || 'SPVB', {
-          body: payload.body || 'New message',
-          icon: '/icon-192.png',
-          badge: '/icon-192.png',
-          tag: `spvb-msg-${fromId || 'msg'}`,
-          renotify: true,
-          silent: false,
-          vibrate: [200, 100, 200],
-          data: { ...payload.data, notifType: 'message' },
-          actions: [
-            { action: 'open',    title: '💬 Reply' },
-            { action: 'dismiss', title: 'Dismiss' },
-          ],
-        })
-      })
-    )
+    return
   }
+
+  // ── Regular message notification ──────────────────────────────────────────
+  // Count unread messages per sender for grouped display
+  if (!_unread[fromId]) _unread[fromId] = { count: 0, lastBody: '', title: payload.title || 'SPVB' }
+  _unread[fromId].count += 1
+  _unread[fromId].lastBody = payload.body || 'New message'
+  _unread[fromId].title = payload.title || 'SPVB'
+
+  const count   = _unread[fromId].count
+  const body    = count > 1 ? `${count} new messages` : (payload.body || 'New message')
+  const title   = _unread[fromId].title
+
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+      // Always ping open tabs (in-app sound / UI update)
+      clients.forEach(c => c.postMessage({ type: 'PUSH_MSG', from: fromId, body: payload.body }))
+
+      // Always show OS notification — critical for background/closed app on Android
+      return self.registration.showNotification(title, {
+        body,
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        tag: `spvb-msg-${fromId}`,
+        renotify: true,
+        silent: false,
+        vibrate: [200, 100, 200],
+        data: { ...payload.data, fromId, notifType: 'message' },
+        actions: [
+          { action: 'reply', title: '↩ Reply', type: 'text', placeholder: 'Type a reply…' },
+          { action: 'open',  title: '💬 Open' },
+        ],
+      })
+    })
+  )
 })
 
-// ── Notification clicked ──────────────────────────────────────────────────────
+// ── Notification clicked / action ─────────────────────────────────────────────
 self.addEventListener('notificationclick', e => {
   e.notification.close()
 
   const data      = e.notification.data || {}
-  const fromId    = data.from
+  const fromId    = data.fromId || data.from
   const notifType = data.notifType || 'message'
   const action    = e.action
 
-  if (action === 'dismiss') return
+  // Reset unread count for this sender when user interacts
+  if (fromId) delete _unread[String(fromId)]
 
   if (notifType === 'call') {
     if (action === 'decline') {
-      // Decline: tell open tabs to reject the call
       e.waitUntil(
         self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
           clients.forEach(c => c.postMessage({ type: 'DECLINE_CALL', from: fromId }))
+          // If no open clients, send decline via fetch so caller knows
+          if (!clients.length) {
+            fetch('/api/call/decline', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ from: fromId }),
+            }).catch(() => {})
+          }
         })
       )
       return
     }
-    // Answer: focus/open app with call context
+    // Answer or tap body — focus/open app
     e.waitUntil(
       self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
-        const callUrl = fromId ? `/?call=${fromId}` : '/'
         for (const client of list) {
           if (client.url.startsWith(self.location.origin) && 'focus' in client) {
             client.focus()
@@ -128,13 +147,56 @@ self.addEventListener('notificationclick', e => {
             return
           }
         }
-        return self.clients.openWindow(callUrl)
+        return self.clients.openWindow(fromId ? `/?call=${fromId}&callType=${data.callType || 'voice'}` : '/')
       })
     )
     return
   }
 
-  // Regular message — open chat
+  // ── Message: inline reply from notification ───────────────────────────────
+  const replyText = e.reply || ''   // text typed in the reply action input (Android Chrome)
+
+  if (action === 'reply' && replyText.trim()) {
+    // Send reply directly via fetch without opening the app
+    e.waitUntil(
+      (async () => {
+        try {
+          const token = await _getToken()
+          if (token && fromId) {
+            const room = await _getRoom(fromId, token)
+            if (room) {
+              await fetch('/api/messages', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ content: replyText.trim(), room, recipient_id: Number(fromId), encrypted: false }),
+              })
+              // Show a "Sent" notification briefly
+              await self.registration.showNotification('SPVB', {
+                body: `You: ${replyText.trim()}`,
+                icon: '/icon-192.png',
+                tag: `spvb-msg-${fromId}`,
+                silent: true,
+              })
+              return
+            }
+          }
+        } catch {}
+        // Fallback: open app with reply pre-filled
+        const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+        for (const client of clients) {
+          if (client.url.startsWith(self.location.origin) && 'focus' in client) {
+            client.focus()
+            client.postMessage({ type: 'OPEN_CHAT', contactId: String(fromId), replyText })
+            return
+          }
+        }
+        await self.clients.openWindow(fromId ? `/?chat=${fromId}` : '/')
+      })()
+    )
+    return
+  }
+
+  // Open or focus app to the right chat
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
       for (const client of list) {
@@ -154,10 +216,31 @@ self.addEventListener('pushsubscriptionchange', e => {
   e.waitUntil(
     self.registration.pushManager.subscribe({ userVisibleOnly: true })
       .then(sub => {
-        // Notify all tabs to re-register subscription with server
         return self.clients.matchAll({ type: 'window' }).then(clients => {
           clients.forEach(c => c.postMessage({ type: 'RESUBSCRIBE', subscription: sub.toJSON() }))
         })
       })
   )
 })
+
+// ── Helpers for inline reply (SW context) ────────────────────────────────────
+async function _getToken() {
+  // Read JWT from IndexedDB or cache — SW can't access localStorage
+  try {
+    const cache = await caches.open('spvb-auth-v1')
+    const res   = await cache.match('/sw-token')
+    if (res) return await res.text()
+  } catch {}
+  return null
+}
+
+async function _getRoom(contactId, token) {
+  try {
+    const res = await fetch(`/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) return null
+    const me = await res.json()
+    const myId = me.id
+    return `dm_${Math.min(myId, Number(contactId))}_${Math.max(myId, Number(contactId))}`
+  } catch {}
+  return null
+}

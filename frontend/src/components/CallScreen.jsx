@@ -7,7 +7,7 @@ const ICE = [
   { urls: 'stun:stun3.l.google.com:19302' },
 ]
 
-export default function CallScreen({ call, wsRef, onEnd }) {
+export default function CallScreen({ call, wsRef, onEnd, onMinimize }) {
   const { type, contact, role, offerSdp } = call
 
   const pcRef            = useRef(null)
@@ -23,6 +23,7 @@ export default function CallScreen({ call, wsRef, onEnd }) {
   const remoteDescSet    = useRef(false)
   const durationRef      = useRef(0)
   const wasConnectedRef  = useRef(false)
+  const endFiredRef      = useRef(false)  // guard: onEnd fires at most once per call
 
   const [status, setStatus]       = useState(role === 'caller' ? 'calling' : 'connecting')
   const [duration, setDuration]   = useState(0)
@@ -33,6 +34,12 @@ export default function CallScreen({ call, wsRef, onEnd }) {
   const [playBlocked, setPlayBlocked] = useState(false)
 
   const targetId = String(contact.id)
+
+  const safeEnd = (result) => {
+    if (endFiredRef.current) return
+    endFiredRef.current = true
+    onEnd(result)
+  }
 
   const send = (data) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -62,7 +69,7 @@ export default function CallScreen({ call, wsRef, onEnd }) {
 
   const endCall = () => {
     cleanup(true)
-    onEnd({ duration: durationRef.current, connected: wasConnectedRef.current, rejected: false })
+    safeEnd({ duration: durationRef.current, connected: wasConnectedRef.current, rejected: false })
   }
 
   // Bind remoteStreamRef to the right media element and call play().
@@ -147,7 +154,7 @@ export default function CallScreen({ call, wsRef, onEnd }) {
           if (!alive) return
           if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
             cleanup(false)
-            onEnd({ duration: durationRef.current, connected: wasConnectedRef.current, rejected: false })
+            safeEnd({ duration: durationRef.current, connected: wasConnectedRef.current, rejected: false })
           }
         }
 
@@ -175,7 +182,7 @@ export default function CallScreen({ call, wsRef, onEnd }) {
         }
       } catch (err) {
         console.error('WebRTC setup failed:', err)
-        if (alive) { cleanup(false); onEnd({ duration: 0, connected: false, rejected: false }) }
+        if (alive) { cleanup(false); safeEnd({ duration: 0, connected: false, rejected: false }) }
       }
     }
 
@@ -207,7 +214,7 @@ export default function CallScreen({ call, wsRef, onEnd }) {
       if (data.type === 'call_end' || data.type === 'call_reject') {
         if (alive) {
           cleanup(false)
-          onEnd({ duration: durationRef.current, connected: wasConnectedRef.current, rejected: data.type === 'call_reject' })
+          safeEnd({ duration: durationRef.current, connected: wasConnectedRef.current, rejected: data.type === 'call_reject' })
         }
       }
     }
@@ -373,6 +380,19 @@ export default function CallScreen({ call, wsRef, onEnd }) {
             </div>
           )}
         </div>
+      )}
+
+      {/* Minimize button (top-left) */}
+      {onMinimize && (
+        <button onClick={onMinimize} style={{
+          position: 'absolute', top: 16, left: 16, zIndex: 20,
+          background: 'rgba(0,0,0,0.45)', border: 'none', borderRadius: 20,
+          padding: '6px 14px', color: '#fff', fontSize: 13, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', gap: 6, backdropFilter: 'blur(4px)',
+        }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+          Chat
+        </button>
       )}
 
       {/* Top info */}

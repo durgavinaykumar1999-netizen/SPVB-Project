@@ -186,14 +186,16 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
   const [botMsgs, setBotMsgs] = useState(INIT_BOT_MSGS)
   const [liveMessages, setLiveMessages] = useState(() => {
     try {
-      const uid = JSON.parse(localStorage.getItem('user') || '{}')?.id
+      const storedUser = JSON.parse(localStorage.getItem('user') || '{}')
+      const uid = storedUser?.id
       if (!uid) return {}
+      const retDays = storedUser?.msg_retention_days ?? 1
       const stored = JSON.parse(localStorage.getItem(`msgs_${uid}`) || '{}')
-      const cutoff = Date.now() - 24 * 60 * 60 * 1000  // drop messages older than 24h
+      const cutoff = retDays > 0 ? Date.now() - retDays * 24 * 60 * 60 * 1000 : 0
       const cleaned = {}
       for (const [id, msgs] of Object.entries(stored)) {
         cleaned[id] = (msgs || [])
-          .filter(m => !m.created_at || new Date(m.created_at).getTime() > cutoff)
+          .filter(m => !m.created_at || cutoff === 0 || new Date(m.created_at).getTime() > cutoff)
           .map(m => ({ ...m, pending: false }))
       }
       return cleaned
@@ -214,11 +216,15 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
   const [search, setSearch] = useState('')
   const [showEmoji, setShowEmoji] = useState(false)
   const [activeCall, setActiveCall] = useState(null)
+  const [callMinimized, setCallMinimized] = useState(false)
   const [incomingCall, setIncomingCall] = useState(null)
   const [showAddContact, setShowAddContact] = useState(false)
   const [mobileShowChat, setMobileShowChat] = useState(false)
   const [botTyping, setBotTyping] = useState(false)
   const [tab, setTab] = useState('chats')
+  const tabSwipeStartX = useRef(null)
+  const tabSwipeStartY = useRef(null)
+  const TABS = ['chats', 'status', 'calls', 'mail']
   const [showSettings, setShowSettings] = useState(false)
   const [settingsPage, setSettingsPage] = useState(null) // null|'account'|'chats'|'notifications'|'privacy'|'help'|'devices'
   const [onlineMap, setOnlineMap] = useState({})
@@ -232,10 +238,17 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
   const [statusPosting, setStatusPosting] = useState(false) // uploading indicator
   const [statusPostProgress, setStatusPostProgress] = useState(0)
   const [showContactInfo, setShowContactInfo] = useState(false)
+  const [showProfileImagePopup, setShowProfileImagePopup] = useState(false)
   const [replyTo, setReplyTo] = useState(null) // { id, text, sent, media_url, media_type, fileName }
   const [hoveredMsgId, setHoveredMsgId] = useState(null)
   const [msgMenuId, setMsgMenuId] = useState(null) // which message has dropdown open
   const [msgMenuPos, setMsgMenuPos] = useState({ x: 0, y: 0 }) // fixed position for dropdown
+  const [mobileMsgMenu, setMobileMsgMenu] = useState(null) // mobile bottom-sheet context menu
+  const [swipeState, setSwipeState] = useState({}) // { [msgId]: swipeX }
+  const longPressTimer = useRef(null)
+  const swipeStartX = useRef(null)
+  const swipeStartY = useRef(null)
+  const isMobile = () => window.matchMedia('(pointer: coarse)').matches
   const [deleteConfirmMsg, setDeleteConfirmMsg] = useState(null) // message pending delete confirmation
   const [showAttachMenu, setShowAttachMenu] = useState(false)
   const [locationLoading, setLocationLoading] = useState(false)
@@ -270,6 +283,7 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
   const [editPhone, setEditPhone] = useState('')
   const [editRetention, setEditRetention] = useState(0)
   const [editSaving, setEditSaving] = useState(false)
+  const [editSaveMsg, setEditSaveMsg] = useState(null) // { ok: bool, text: string }
   const [showQuickProfile, setShowQuickProfile] = useState(false)
   const [editingNickname, setEditingNickname] = useState(null)
   const [nicknameInput, setNicknameInput] = useState('')
@@ -357,6 +371,7 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
     }
   }
   const [showLastSeen, setShowLastSeen] = useState(() => localStorage.getItem('show_last_seen') !== 'off')
+  const [showOnlineStatus, setShowOnlineStatus] = useState(() => localStorage.getItem('show_online_status') !== 'off')
   const [readReceipts, setReadReceipts] = useState(() => localStorage.getItem('read_receipts') !== 'off')
   const [chatTheme, setChatTheme] = useState(() => localStorage.getItem('chat_theme') || 'green')
   const THEMES = {
@@ -467,6 +482,26 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
 
   const themeColor = THEMES[chatTheme] || PREMIUM_THEMES.find(t => t.id === chatTheme)?.accent || THEMES.green
 
+  /* ── Mobile back-button intercept (PWA / Android) ── */
+  useEffect(() => {
+    // Push a dummy history entry so the first back press stays inside the app
+    window.history.pushState({ spvb: true }, '')
+
+    const onPopState = (e) => {
+      // Re-push so subsequent back presses are also intercepted
+      window.history.pushState({ spvb: true }, '')
+
+      // Close overlays in priority order
+      if (showProfileImagePopup) { setShowProfileImagePopup(false); return }
+      if (showContactInfo)       { setShowContactInfo(false);       return }
+      if (showSettings)          { setShowSettings(false);          return }
+      if (showAddContact)        { setShowAddContact(false);        return }
+      if (mobileShowChat)        { setMobileShowChat(false); setActiveId(null); return }
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [showProfileImagePopup, showContactInfo, showSettings, showAddContact, mobileShowChat])
+
   /* ── E2E key init — generate/load key pair and upload public key ── */
   useEffect(() => {
     if (!user?.id) return
@@ -559,6 +594,11 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
     if (!user?.id || !('Notification' in window)) return
     const token = localStorage.getItem('token')
 
+    // Store token in SW-accessible cache so inline reply can send messages without opening the app
+    if (token && 'caches' in window) {
+      caches.open('spvb-auth-v1').then(c => c.put('/sw-token', new Response(token))).catch(() => {})
+    }
+
     const setup = async () => {
       // Step 1: request notification permission
       const perm = await Notification.requestPermission()
@@ -628,7 +668,14 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
       if (!msg?.type) return
 
       if (msg.type === 'OPEN_CHAT' && msg.contactId) {
-        setActiveId(Number(msg.contactId) || msg.contactId)
+        const cid = Number(msg.contactId) || msg.contactId
+        setActiveId(cid)
+        setMobileShowChat(true)
+        if (msg.replyText) {
+          setTimeout(() => {
+            if (inputRef.current) { inputRef.current.value = msg.replyText; inputRef.current.focus() }
+          }, 400)
+        }
         return
       }
 
@@ -795,8 +842,9 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
       .catch(() => {})
 
     const beat = async () => {
+      const statusVisible = localStorage.getItem('show_online_status') !== 'off'
       try {
-        const r = await fetch(apiUrl('/api/users/me/status'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: 'online' }) })
+        const r = await fetch(apiUrl('/api/users/me/status'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: statusVisible ? 'online' : 'hidden' }) })
         if (r.status === 401) { localStorage.clear(); navigate('/login') }
       } catch (_) {}
     }
@@ -808,21 +856,34 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
       silentlyRefreshGoogleTokens(GOOGLE_CLIENT_ID)
     }
 
-    const loadContacts = async () => {
-      setContactsLoading(true)
+    const loadContacts = async (silent = false) => {
+      if (!silent) setContactsLoading(true)
       try {
         const res = await fetch(apiUrl('/api/contacts'), { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const contacts = await res.json()
           setSpvbContacts(contacts)
+          localStorage.setItem('contacts_cache', JSON.stringify(contacts))
           const nicks = {}
           contacts.forEach(c => { if (c.nickname) nicks[c.id] = c.nickname })
           setNicknames(nicks)
         }
-      } catch (_) {} finally { setContactsLoading(false) }
+      } catch (_) {} finally { if (!silent) setContactsLoading(false) }
     }
-    loadContacts()
-    const contactsInterval = setInterval(loadContacts, 60000)
+    // Show cached contacts immediately so UI is instant, then refresh in background
+    try {
+      const cached = JSON.parse(localStorage.getItem('contacts_cache') || '[]')
+      if (cached.length > 0) {
+        setSpvbContacts(cached)
+        const nicks = {}
+        cached.forEach(c => { if (c.nickname) nicks[c.id] = c.nickname })
+        setNicknames(nicks)
+        loadContacts(true) // silent background refresh
+      } else {
+        loadContacts()
+      }
+    } catch { loadContacts() }
+    const contactsInterval = setInterval(() => loadContacts(true), 60000)
 
     const loadGroups = async () => {
       try {
@@ -972,9 +1033,17 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
         const myId = JSON.parse(localStorage.getItem('user') || '{}').id
         const fmt = (iso) => {
           try {
-            const d = new Date(iso), now = new Date()
-            if (d.toDateString() === now.toDateString())
-              return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            // Ensure UTC is parsed correctly (append Z if missing)
+            const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z')
+            const now = new Date()
+            const diffMs = now - d
+            const diffMin = Math.floor(diffMs / 60000)
+            if (diffMin < 1) return 'just now'
+            if (diffMin < 60) return `${diffMin} min ago`
+            const diffHr = Math.floor(diffMin / 60)
+            if (diffHr < 24 && d.toDateString() === now.toDateString())
+              return `${diffHr} hr ago`
+            if (diffHr < 48) return 'Yesterday'
             return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
           } catch { return '' }
         }
@@ -1069,8 +1138,8 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
     }
   }, [navigate])
 
-  // Fetch call logs when calls tab opens
-  useEffect(() => { if (tab === 'calls') fetchCallLogs() }, [tab]) // eslint-disable-line
+  // Fetch call logs when calls tab opens or when a chat opens
+  useEffect(() => { if (tab === 'calls' || activeId) fetchCallLogs() }, [tab, activeId]) // eslint-disable-line
 
   // Keep refs fresh
   useEffect(() => { spvbContactsRef.current = spvbContacts }, [spvbContacts])
@@ -1100,12 +1169,14 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
   useEffect(() => {
     if (!user?.id) return
     try {
+      const retDays = user?.msg_retention_days ?? 1
+      const cutoff = retDays > 0 ? Date.now() - retDays * 24 * 60 * 60 * 1000 : 0
       const trimmed = {}
       for (const [id, msgs] of Object.entries(liveMessages)) {
-        // Never persist blob: URLs — they die on page refresh; server URL restores on next poll
-        trimmed[id] = (msgs || []).slice(-150).map(m =>
-          m.media_url?.startsWith('blob:') ? { ...m, media_url: null } : m
-        )
+        trimmed[id] = (msgs || [])
+          .filter(m => !m.created_at || cutoff === 0 || new Date(m.created_at).getTime() > cutoff)
+          .slice(-150)
+          .map(m => m.media_url?.startsWith('blob:') ? { ...m, media_url: null } : m)
       }
       localStorage.setItem(`msgs_${user.id}`, JSON.stringify(trimmed))
     } catch {}
@@ -1471,7 +1542,28 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
 
   const activeContact = [...allContacts, botContact, selfContact, ...groupContacts].find(c => c.id === activeId)
   const isGroupChat = typeof activeId === 'string' && activeId.startsWith('g_')
-  const chatMsgs = activeId === 'bot' ? botMsgs : activeId === SELF_CHAT_ID ? (liveMessages[SELF_CHAT_ID] || []) : isGroupChat ? (groupMessages[activeId] || []) : (liveMessages[activeId] || [])
+  const _retentionCutoff = (() => { const d = user?.msg_retention_days ?? 1; return d > 0 ? Date.now() - d * 86400000 : 0 })()
+  const _filterByRetention = (msgs) => msgs.filter(m => !m.created_at || _retentionCutoff === 0 || new Date(m.created_at.endsWith('Z') ? m.created_at : m.created_at + 'Z').getTime() > _retentionCutoff)
+  const _rawChatMsgs = activeId === 'bot' ? botMsgs : activeId === SELF_CHAT_ID ? (liveMessages[SELF_CHAT_ID] || []) : isGroupChat ? (groupMessages[activeId] || []) : _filterByRetention(liveMessages[activeId] || [])
+  const chatMsgs = useMemo(() => {
+    if (!activeId || activeId === 'bot' || activeId === SELF_CHAT_ID || isGroupChat) return _rawChatMsgs
+    const contactCallLogs = callLogs.filter(l => String(l.contact_id) === String(activeId)).map(l => ({
+      id: `call_${l.id}`,
+      _isCallLog: true,
+      call_type: l.call_type,
+      direction: l.direction,
+      status: l.status,
+      duration: l.duration,
+      created_at: l.created_at,
+    }))
+    if (!contactCallLogs.length) return _rawChatMsgs
+    const merged = [..._rawChatMsgs, ...contactCallLogs].sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at.endsWith('Z') ? a.created_at : a.created_at + 'Z').getTime() : 0
+      const tb = b.created_at ? new Date(b.created_at.endsWith('Z') ? b.created_at : b.created_at + 'Z').getTime() : 0
+      return ta - tb
+    })
+    return merged
+  }, [_rawChatMsgs, callLogs, activeId, isGroupChat])
   const filteredContacts = allContacts.filter(c => {
     if (c.isInvite) return true
     if (blockedIds.has(c.id)) return false
@@ -1493,6 +1585,7 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
     if (!c.isSaved) return { label: '', isOnline: false }
     const live = onlineMap[String(c.id)]
     const status = live?.online_status || c.online_status
+    if (status === 'hidden') return { label: '', isOnline: false } // user hid their status
     if (status === 'online') return { label: 'online', isOnline: true }
     // Use the locally-observed last-online time (accurate to last poll) over the stale DB timestamp
     const localLastSeen = lastSeenRef.current[String(c.id)]
@@ -2170,27 +2263,64 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
     setSettingsPage('account')
   }
 
+  const _putAuthMe = async (body) => {
+    const token = localStorage.getItem('token')
+    const doFetch = () => fetch(apiUrl('/api/auth/me'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
+    let res
+    try { res = await doFetch() } catch {
+      // retry once after 800ms in case backend briefly reloaded
+      await new Promise(r => setTimeout(r, 800))
+      res = await doFetch()
+    }
+    return res
+  }
+
   const saveProfile = async (extraFields = {}, closeSettings = true) => {
     setEditSaving(true)
+    if (closeSettings) setEditSaveMsg(null)
     try {
-      const token = localStorage.getItem('token')
       const body = { ...extraFields }
       if (closeSettings) {
-        // Only include text fields when explicitly saving from settings form
-        if (editName) body.display_name = editName
-        if (editAbout !== undefined) body.about = editAbout
-        if (editPhone !== undefined) body.phone = editPhone
+        const name = editName.trim()
+        if (!name) {
+          setEditSaveMsg({ ok: false, text: 'Display name cannot be empty.' })
+          setEditSaving(false)
+          return
+        }
+        body.display_name = name
+        body.about = editAbout ?? ''
+        body.phone = editPhone ?? ''
         body.msg_retention_days = editRetention
       }
-      const res = await fetch(apiUrl('/api/auth/me'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
+      const res = await _putAuthMe(body)
+      const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        const data = await res.json()
         const updated = { ...user, ...data.user }
         setUser(updated)
         localStorage.setItem('user', JSON.stringify(updated))
-        if (closeSettings) setSettingsPage(null)
+        // Soft refresh: purge expired messages from memory using the new retention value
+        const newRetDays = updated.msg_retention_days ?? 1
+        const newCutoff = newRetDays > 0 ? Date.now() - newRetDays * 86400000 : 0
+        if (newCutoff > 0) {
+          setLiveMessages(prev => {
+            const next = {}
+            for (const [id, msgs] of Object.entries(prev)) {
+              next[id] = (msgs || []).filter(m => !m.created_at || new Date(m.created_at.endsWith('Z') ? m.created_at : m.created_at + 'Z').getTime() > newCutoff)
+            }
+            return next
+          })
+        }
+        if (closeSettings) {
+          setEditSaveMsg({ ok: true, text: 'Changes saved!' })
+          setTimeout(() => { setEditSaveMsg(null); setSettingsPage(null) }, 1200)
+        }
+      } else {
+        const errText = typeof data.detail === 'string' ? data.detail : `Save failed (${res.status}). Try again.`
+        if (closeSettings) setEditSaveMsg({ ok: false, text: errText })
       }
-    } catch (_) {} finally { setEditSaving(false) }
+    } catch (err) {
+      if (closeSettings) setEditSaveMsg({ ok: false, text: `Network error: ${err?.message || 'Please try again.'}` })
+    } finally { setEditSaving(false) }
   }
 
   const uploadCover = async (file) => {
@@ -2917,7 +3047,19 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
       )}
 
       {/* ── SIDEBAR ── */}
-      <div className={`wa-sidebar${mobileShowChat ? ' mobile-hidden' : ''}`}>
+      <div className={`wa-sidebar${mobileShowChat ? ' mobile-hidden' : ''}`}
+        onTouchStart={(e) => { tabSwipeStartX.current = e.touches[0].clientX; tabSwipeStartY.current = e.touches[0].clientY }}
+        onTouchEnd={(e) => {
+          if (tabSwipeStartX.current === null) return
+          const dx = e.changedTouches[0].clientX - tabSwipeStartX.current
+          const dy = e.changedTouches[0].clientY - tabSwipeStartY.current
+          tabSwipeStartX.current = null
+          if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx) * 0.8) return
+          const idx = TABS.indexOf(tab)
+          if (dx < 0 && idx < TABS.length - 1) setTab(TABS[idx + 1])
+          else if (dx > 0 && idx > 0) setTab(TABS[idx - 1])
+        }}
+      >
         {/* Header */}
         <div className="wa-sidebar-header">
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -3007,11 +3149,24 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
               const ringColor = hasSt ? (seenSt ? 'rgba(134,150,160,0.45)' : themeColor) : 'transparent'
               return (
                 <div key={c.id} className={`wa-chat-item${activeId === c.id ? ' active' : ''}`} onClick={() => c.isInvite ? inviteContact(c) : selectChat(c.id)}>
-                  <div style={{ position: 'relative', flexShrink: 0, width: 49, height: 49,
+                  <div
+                    onClick={(e) => {
+                      if (c.isInvite || c.id === 'bot') return
+                      e.stopPropagation()
+                      if (hasSt) {
+                        const stGroup = contactStatuses.find(g => String(g.userId) === cId)
+                        if (stGroup) { recordStatusView(stGroup.statuses.map(s => s.id), cId); setViewingStatusGroups([stGroup]); setViewingStatusStart(0) }
+                      } else {
+                        selectChat(c.id)
+                        setShowProfileImagePopup(true)
+                      }
+                    }}
+                    style={{ position: 'relative', flexShrink: 0, width: 49, height: 49,
                     borderRadius: '50%',
                     background: hasSt ? (seenSt ? 'rgba(134,150,160,0.45)' : `conic-gradient(${themeColor} 0%, #25d366 100%)`) : 'transparent',
                     padding: hasSt ? 2 : 0,
                     boxSizing: 'border-box',
+                    cursor: 'pointer',
                   }}>
                     <div className="wa-chat-avatar" style={{ background: c.color, position: 'relative', width: '100%', height: '100%', border: hasSt ? '2px solid #111b21' : 'none', boxSizing: 'border-box' }}>
                       {c.avatar_url ? <img src={c.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : c.id === 'bot' ? '🤖' : c.initials}
@@ -3510,10 +3665,10 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
                         setViewingStatusGroups([acStGroup])
                         setViewingStatusStart(0)
                       } else if (activeContact?.id !== 'bot' && !activeContact?.isInvite) {
-                        setShowContactInfo(true)
+                        setShowProfileImagePopup(true)
                       }
                     }}
-                    title={acHasSt ? (acSeenSt ? 'Status (viewed)' : 'New status — tap to view') : 'View profile'}
+                    title={acHasSt ? (acSeenSt ? 'Status (viewed)' : 'New status — tap to view') : 'View profile photo'}
                     style={{
                       flexShrink: 0, width: 44, height: 44, borderRadius: '50%', boxSizing: 'border-box',
                       background: acHasSt ? (acSeenSt ? 'rgba(134,150,160,0.45)' : `conic-gradient(${themeColor} 0%, #25d366 100%)`) : 'transparent',
@@ -3597,7 +3752,6 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
               const activeChatFont = PER_CHAT_FONTS.find(f => f.id === ct.font) || PER_CHAT_FONTS[0]
               return (
             <div className="wa-messages" onClick={() => setMsgMenuId(null)} style={{ ...(ct.bg ? { background: ct.bg } : {}), ...(activeChatFont.font !== 'inherit' ? { fontFamily: activeChatFont.font } : {}), ...(activeChatFont.size ? { fontSize: activeChatFont.size } : {}) }}>
-              <div className="wa-date-divider"><span>Today</span></div>
               {chatMsgs.length === 0 && isGroupChat && (
                 <div style={{ textAlign: 'center', padding: '40px 20px', color: '#8696a0', fontSize: 13 }}>
                   <div style={{ fontSize: 32, marginBottom: 8 }}>👥</div>
@@ -3610,44 +3764,127 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
                   Say hi to {activeContact?.name}!
                 </div>
               )}
-              {chatMsgs.map((m) => {
+              {chatMsgs.map((m, _msgIdx) => {
+                const _nowD = new Date()
+                const _getMsgDateKey = (iso) => { if (!iso) return _nowD.toDateString(); const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z'); return d.toDateString() }
+                const _getMsgDateLabel = (iso) => { if (!iso) return 'Today'; const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z'); if (d.toDateString() === _nowD.toDateString()) return 'Today'; const diff = Math.floor((_nowD - d) / 86400000); if (diff === 1) return 'Yesterday'; if (diff < 7) return d.toLocaleDateString([], { weekday: 'long' }); return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() !== _nowD.getFullYear() ? 'numeric' : undefined }) }
+                const prevMsg = _msgIdx > 0 ? chatMsgs[_msgIdx - 1] : null
+                const showDateDivider = _getMsgDateKey(m.created_at) !== _getMsgDateKey(prevMsg?.created_at)
+                const _retDays = user?.msg_retention_days ?? 1
+                const _expiresAt = m.created_at ? new Date((m.created_at.endsWith('Z') ? m.created_at : m.created_at + 'Z')).getTime() + _retDays * 86400000 : null
+                const _diffMs = _expiresAt ? _expiresAt - Date.now() : null
+                const _expiresLabel = (_diffMs && _diffMs > 0 && _diffMs < 86400000) ? (_diffMs > 3600000 ? `Deletes in ${Math.floor(_diffMs/3600000)}h ${Math.floor((_diffMs%3600000)/60000)}m` : `Deletes in ${Math.floor(_diffMs/60000)}m`) : null
                 const isStatusReaction = typeof m.text === 'string' && /^Reacted .+ to your status/.test(m.text)
+                if (m._isCallLog) {
+                  const isMissed = m.status === 'missed' || m.status === 'rejected'
+                  const isOut = m.direction === 'outgoing'
+                  const callIcon = m.call_type === 'video'
+                    ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+                    : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.63 3.38 2 2 0 0 1 3.6 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.6a16 16 0 0 0 6.29 6.29l.96-.96a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                  const durLabel = m.duration > 0 ? ` · ${Math.floor(m.duration/60)}:${String(m.duration%60).padStart(2,'0')}` : ''
+                  const callTimeLabel = (() => { try { const d = new Date(m.created_at.endsWith('Z') ? m.created_at : m.created_at + 'Z'); return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) } catch { return '' } })()
+                  return (
+                    <div key={m.id}>
+                      {showDateDivider && <div className="wa-date-divider"><span>{_getMsgDateLabel(m.created_at)}</span></div>}
+                      <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 16px' }}>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(134,150,160,0.12)', border: '1px solid rgba(134,150,160,0.15)', borderRadius: 12, padding: '6px 14px', color: isMissed ? '#ea5455' : '#8696a0', fontSize: 12, cursor: 'pointer' }}
+                          onClick={() => activeContact && initiateCall(activeContact, m.call_type)}>
+                          <span style={{ color: isMissed ? '#ea5455' : isOut ? themeColor : '#8696a0' }}>{callIcon}</span>
+                          <span style={{ fontWeight: 500 }}>{isOut ? 'Outgoing' : isMissed ? 'Missed' : 'Incoming'} {m.call_type === 'video' ? 'video call' : 'call'}{durLabel}</span>
+                          <span style={{ color: '#8696a0', fontSize: 11 }}>{callTimeLabel}</span>
+                          <span style={{ color: themeColor, fontSize: 11, fontWeight: 600 }}>Call back</span>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                }
                 if (isStatusReaction) {
                   return (
-                    <div key={m.id} style={{ textAlign: 'center', padding: '2px 16px' }}>
-                      <span style={{ background: 'rgba(134,150,160,0.15)', color: '#8696a0', fontSize: 11, padding: '3px 10px', borderRadius: 12, fontStyle: 'italic' }}>
-                        {m.sent ? 'You' : (activeContact?.name || 'Them')} {m.text}
-                      </span>
+                    <div key={m.id}>
+                      {showDateDivider && <div className="wa-date-divider"><span>{_getMsgDateLabel(m.created_at)}</span></div>}
+                      <div style={{ textAlign: 'center', padding: '2px 16px' }}>
+                        <span style={{ background: 'rgba(134,150,160,0.15)', color: '#8696a0', fontSize: 11, padding: '3px 10px', borderRadius: 12, fontStyle: 'italic' }}>
+                          {m.sent ? 'You' : (activeContact?.name || 'Them')} {m.text}
+                        </span>
+                      </div>
                     </div>
                   )
                 }
                 return (
-                <div key={m.id} id={`msg-${m.id}`} className={`wa-msg ${m.sent ? 'sent' : 'recv'}`}
+                <div key={m.id} style={{ display: 'contents' }}>
+                  {showDateDivider && <div className="wa-date-divider"><span>{_getMsgDateLabel(m.created_at)}</span></div>}
+                  {_expiresLabel && <div style={{ fontSize: 9, color: '#f39c12', textAlign: m.sent ? 'right' : 'left', padding: '0 16px 1px', opacity: 0.8 }}>{_expiresLabel}</div>}
+                <div id={`msg-${m.id}`} className={`wa-msg ${m.sent ? 'sent' : 'recv'}`}
                   onMouseEnter={() => setHoveredMsgId(m.id)} onMouseLeave={() => setHoveredMsgId(null)}
-                  style={{ position: 'relative' }}>
-                  {/* Chevron — visible on hover (desktop) or always faintly visible (mobile) */}
+                  style={{ position: 'relative', transform: `translateX(${swipeState[m.id] || 0}px)`, transition: swipeState[m.id] ? 'none' : 'transform 0.2s ease' }}
+                  onMouseDown={() => {
+                    if (isMobile()) return
+                  }}
+                  onTouchStart={(e) => {
+                    swipeStartX.current = e.touches[0].clientX
+                    swipeStartY.current = e.touches[0].clientY
+                    longPressTimer.current = setTimeout(() => {
+                      longPressTimer.current = null
+                      setMobileMsgMenu(m)
+                    }, 500)
+                  }}
+                  onTouchMove={(e) => {
+                    const dx = e.touches[0].clientX - swipeStartX.current
+                    const dy = e.touches[0].clientY - swipeStartY.current
+                    if (Math.abs(dy) > Math.abs(dx)) {
+                      clearTimeout(longPressTimer.current); longPressTimer.current = null; return
+                    }
+                    if (Math.abs(dx) > 8) {
+                      clearTimeout(longPressTimer.current); longPressTimer.current = null
+                    }
+                    // Swipe right (recv) or left (sent) to trigger reply
+                    const allowSwipe = (m.sent && dx < 0) || (!m.sent && dx > 0)
+                    if (allowSwipe) {
+                      const clamped = m.sent ? Math.max(-72, Math.min(0, dx)) : Math.max(0, Math.min(72, dx))
+                      setSwipeState(prev => ({ ...prev, [m.id]: clamped }))
+                    }
+                  }}
+                  onTouchEnd={() => {
+                    clearTimeout(longPressTimer.current); longPressTimer.current = null
+                    const sx = swipeState[m.id] || 0
+                    if (Math.abs(sx) >= 48) {
+                      setReplyTo({ id: m.id, text: m.text, sent: m.sent, media_url: m.media_url, media_type: m.media_type, fileName: m.fileName })
+                      setTimeout(() => inputRef.current?.focus(), 50)
+                    }
+                    setSwipeState(prev => ({ ...prev, [m.id]: 0 }))
+                  }}>
+                  {/* Swipe reply arrow indicator */}
+                  {Math.abs(swipeState[m.id] || 0) > 10 && (
+                    <div style={{ position: 'absolute', [m.sent ? 'right' : 'left']: -36, top: '50%', transform: 'translateY(-50%)', opacity: Math.min(1, Math.abs(swipeState[m.id] || 0) / 48), color: '#00a884', transition: 'opacity 0.1s' }}>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+                    </div>
+                  )}
+                  {/* Chevron — desktop only, outside the bubble */}
+                  {!isMobile() && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
-                      const rect = e.currentTarget.getBoundingClientRect()
+                      const rect = e.currentTarget.closest(`#msg-${m.id}`)?.getBoundingClientRect() || e.currentTarget.getBoundingClientRect()
                       const dropW = 180
-                      const x = m.sent ? Math.max(4, rect.left - dropW + rect.width) : rect.left
+                      const x = m.sent ? Math.max(4, rect.right - dropW) : rect.left
                       const y = rect.bottom + 4
-                      const clampedY = y + 160 > window.innerHeight ? rect.top - 164 : y
+                      const clampedY = y + 200 > window.innerHeight ? rect.top - 168 : y
                       setMsgMenuPos({ x, y: clampedY })
                       setMsgMenuId(prev => prev === m.id ? null : m.id)
                     }}
                     style={{
-                      position: 'absolute', top: 4, [m.sent ? 'left' : 'right']: 4,
-                      background: hoveredMsgId === m.id ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.18)',
+                      position: 'absolute', top: 4,
+                      [m.sent ? 'left' : 'right']: -28, // outside the bubble
+                      background: 'rgba(0,0,0,0.35)',
                       backdropFilter: 'blur(4px)', border: 'none', borderRadius: '50%',
                       width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
                       cursor: 'pointer', color: '#e9edef', zIndex: 10, padding: 0,
-                      opacity: hoveredMsgId === m.id ? 1 : 0.45,
-                      transition: 'opacity 0.15s, background 0.15s',
+                      opacity: hoveredMsgId === m.id ? 1 : 0,
+                      transition: 'opacity 0.15s',
                     }}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
                   </button>
+                  )}
                   <div className="wa-bubble" style={m.sent ? { background: getChatTheme(activeId).bubble || dm.bubble_sent } : { background: dm.bubble_recv }}>
                     {/* Group sender name */}
                     {isGroupChat && !m.sent && (
@@ -3794,6 +4031,7 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
                       )}
                     </div>
                   </div>
+                </div>
                 </div>
                 )
               })}
@@ -3989,6 +4227,46 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
               )}
             </div>
             <style>{`@keyframes recPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.8)} }`}</style>
+
+            {/* Profile Image Popup — full-screen overlay on avatar tap */}
+            {showProfileImagePopup && activeContact && (
+              <div
+                onClick={() => setShowProfileImagePopup(false)}
+                style={{
+                  position: 'fixed', inset: 0, zIndex: 1000,
+                  background: 'rgba(0,0,0,0.92)',
+                  display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', justifyContent: 'center',
+                  animation: 'fadeIn 0.18s ease',
+                }}
+              >
+                {/* Header */}
+                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', background: 'rgba(0,0,0,0.4)' }} onClick={e => e.stopPropagation()}>
+                  <button onClick={() => setShowProfileImagePopup(false)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', padding: 6, display: 'flex' }}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
+                  </button>
+                  <div>
+                    <div style={{ color: '#fff', fontWeight: 600, fontSize: 16 }}>{activeContact.name}</div>
+                    <div style={{ color: '#aaa', fontSize: 12 }}>{getContactStatus(activeContact).label}</div>
+                  </div>
+                </div>
+
+                {/* Profile image */}
+                <div onClick={e => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {activeContact.avatar_url
+                    ? <img src={activeContact.avatar_url} alt="" style={{ maxWidth: '90vw', maxHeight: '80vh', borderRadius: 12, objectFit: 'contain', boxShadow: '0 8px 40px rgba(0,0,0,0.6)' }} />
+                    : (
+                      <div style={{ width: 180, height: 180, borderRadius: '50%', background: activeContact.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 72, color: '#fff', fontWeight: 700, boxShadow: '0 8px 40px rgba(0,0,0,0.6)' }}>
+                        {activeContact.id === 'bot' ? '🤖' : activeContact.initials}
+                      </div>
+                    )
+                  }
+                </div>
+
+                {/* Tap anywhere hint */}
+                <div style={{ position: 'absolute', bottom: 24, color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>Tap anywhere to close</div>
+              </div>
+            )}
 
             {/* Contact Info Panel — slides in from the left */}
             {showContactInfo && activeContact && activeContact.id !== 'bot' && !activeContact.isInvite && (
@@ -4191,6 +4469,29 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
         </div>
       )}
 
+      {/* ── MOBILE LONG-PRESS BOTTOM SHEET ── */}
+      {mobileMsgMenu && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 600, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}
+          onClick={() => setMobileMsgMenu(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#1e2b33', borderRadius: '16px 16px 0 0', padding: '8px 0 24px', boxShadow: '0 -8px 32px rgba(0,0,0,0.6)', animation: 'slideUp 0.2s ease' }}>
+            {/* Preview of the message */}
+            <div style={{ padding: '10px 20px 12px', borderBottom: '1px solid rgba(134,150,160,0.12)', color: '#8696a0', fontSize: 13, maxHeight: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {mobileMsgMenu.text || (mobileMsgMenu.media_type ? `📎 ${mobileMsgMenu.media_type}` : 'Message')}
+            </div>
+            {[
+              { icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#00a884" strokeWidth="2.5"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>, label: 'Reply', color: '#e9edef', action: () => { setReplyTo({ id: mobileMsgMenu.id, text: mobileMsgMenu.text, sent: mobileMsgMenu.sent, media_url: mobileMsgMenu.media_url, media_type: mobileMsgMenu.media_type, fileName: mobileMsgMenu.fileName }); setMobileMsgMenu(null); setTimeout(() => inputRef.current?.focus(), 50) } },
+              { icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2.5"><polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>, label: 'Forward', color: '#e9edef', action: () => { setForwardMsg(mobileMsgMenu); setShowForwardPicker(true); setMobileMsgMenu(null) } },
+              { icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>, label: 'Copy', color: '#e9edef', action: () => { navigator.clipboard?.writeText(mobileMsgMenu.text || '').catch(() => {}); setMobileMsgMenu(null) } },
+              { icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#e74c3c" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>, label: 'Delete', color: '#e74c3c', action: () => { setDeleteConfirmMsg(mobileMsgMenu); setMobileMsgMenu(null) } },
+            ].map(({ icon, label, color, action }) => (
+              <button key={label} onClick={action} style={{ width: '100%', padding: '15px 24px', background: 'none', border: 'none', color, fontSize: 16, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 16, textAlign: 'left' }}>
+                {icon}{label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── MESSAGE CONTEXT MENU (fixed so it's never clipped by scroll) ── */}
       {msgMenuId !== null && (() => {
         const m = (liveMessages[activeId] || []).find(x => x.id === msgMenuId)
@@ -4347,24 +4648,65 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
       )}
 
       {/* ── FULL SCREEN CALL ── */}
+      {/* CallScreen stays MOUNTED to keep WebRTC alive — only hidden via CSS when minimized */}
       {activeCall && (
-        <CallScreen
-          call={activeCall}
-          wsRef={wsRef}
-          onEnd={(callResult) => {
-            if (activeCall?.contact?.id && activeCall.contact.id !== 'bot') {
-              const { duration = 0, connected = false, rejected = false } = callResult || {}
-              saveCallLog({
-                contact_id: activeCall.contact.id,
-                call_type: activeCall.type,
-                direction: activeCall.role === 'caller' ? 'outgoing' : 'incoming',
-                status: connected ? 'completed' : rejected ? 'rejected' : 'missed',
-                duration,
-              })
-            }
-            setActiveCall(null)
-          }}
-        />
+        <div style={{ display: callMinimized ? 'none' : 'block', position: 'fixed', inset: 0, zIndex: 800 }}>
+          <CallScreen
+            call={activeCall}
+            wsRef={wsRef}
+            onMinimize={() => setCallMinimized(true)}
+            onEnd={(callResult) => {
+              if (activeCall?.contact?.id && activeCall.contact.id !== 'bot') {
+                const { duration = 0, connected = false, rejected = false } = callResult || {}
+                saveCallLog({
+                  contact_id: activeCall.contact.id,
+                  call_type: activeCall.type,
+                  direction: activeCall.role === 'caller' ? 'outgoing' : 'incoming',
+                  status: connected ? 'completed' : rejected ? 'rejected' : 'missed',
+                  duration,
+                })
+              }
+              setActiveCall(null); setCallMinimized(false)
+            }}
+          />
+        </div>
+      )}
+
+      {/* ── PiP FLOATING CALL BAR (WhatsApp-style minimised call) ── */}
+      {activeCall && callMinimized && (
+        <div
+          onClick={() => setCallMinimized(false)}
+          style={{
+            position: 'fixed', bottom: 80, right: 16, zIndex: 900,
+            background: '#1a2535', borderRadius: 16,
+            boxShadow: '0 8px 32px rgba(0,0,0,0.7)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            display: 'flex', alignItems: 'center', gap: 10,
+            padding: '10px 14px', cursor: 'pointer', minWidth: 220,
+            animation: 'slideInRight 0.2s ease',
+          }}>
+          {/* Avatar */}
+          <div style={{ width: 40, height: 40, borderRadius: '50%', background: activeCall.contact?.color || '#2a3942', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: 16, overflow: 'hidden', flexShrink: 0, position: 'relative' }}>
+            {activeCall.contact?.avatar_url
+              ? <img src={activeCall.contact.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              : activeCall.contact?.initials}
+            <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid #25d366', animation: 'recPulse 1.5s infinite' }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ color: '#e9edef', fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeCall.contact?.name}</div>
+            <div style={{ color: '#25d366', fontSize: 11 }}>{activeCall.type === 'video' ? '📹 Video call' : '📞 Voice call'} • tap to return</div>
+          </div>
+          {/* End call button */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              wsRef.current?.send(JSON.stringify({ type: 'call_end', to: String(activeCall.contact?.id) }))
+              setActiveCall(null); setCallMinimized(false)
+            }}
+            style={{ background: '#e74c3c', border: 'none', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0 }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z"/></svg>
+          </button>
+        </div>
       )}
 
       {/* ── INCOMING CALL BANNER ── */}
@@ -4864,9 +5206,14 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
                       {editRetention === 0 ? 'Messages will never be auto-deleted.' : `Messages older than ${editRetention} day${editRetention > 1 ? 's' : ''} will be automatically deleted.`}
                     </div>
                   </div>
-                  <button onClick={saveProfile} disabled={editSaving} style={{ width: '100%', padding: '12px', background: themeColor, border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontWeight: 600, fontSize: 14, fontFamily: 'inherit', opacity: editSaving ? 0.7 : 1, marginBottom: 12 }}>
+                  <button onClick={() => saveProfile()} disabled={editSaving} style={{ width: '100%', padding: '12px', background: themeColor, border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontWeight: 600, fontSize: 14, fontFamily: 'inherit', opacity: editSaving ? 0.7 : 1, marginBottom: 8 }}>
                     {editSaving ? 'Saving...' : 'Save Changes'}
                   </button>
+                  {editSaveMsg && (
+                    <div style={{ textAlign: 'center', fontSize: 13, marginBottom: 10, padding: '8px 12px', borderRadius: 8, background: editSaveMsg.ok ? 'rgba(37,211,102,0.12)' : 'rgba(234,67,53,0.12)', color: editSaveMsg.ok ? '#25d366' : '#ea4335', border: `1px solid ${editSaveMsg.ok ? 'rgba(37,211,102,0.3)' : 'rgba(234,67,53,0.3)'}` }}>
+                      {editSaveMsg.ok ? '✓ ' : '✕ '}{editSaveMsg.text}
+                    </div>
+                  )}
                   {/* Delete account */}
                   <div style={{ borderTop: `1px solid ${dm.border}`, paddingTop: 16, marginTop: 4 }}>
                     <div style={{ color: dm.subtext, fontSize: 12, marginBottom: 10, textAlign: 'center' }}>Danger Zone</div>
@@ -4999,7 +5346,7 @@ export default function Dashboard({ onLogout, bioRegistered: _bioRegistered, onR
                   {[
                     { label: 'Last seen', sub: showLastSeen ? 'Everyone can see your last seen' : 'Nobody can see your last seen', val: showLastSeen, set: (v) => { setShowLastSeen(v); localStorage.setItem('show_last_seen', v ? 'on' : 'off') } },
                     { label: 'Read receipts', sub: readReceipts ? 'Contacts see when you read messages' : 'Read receipts disabled', val: readReceipts, set: (v) => { setReadReceipts(v); localStorage.setItem('read_receipts', v ? 'on' : 'off') } },
-                    { label: 'Online status', sub: 'Show when you are online', val: true, set: () => {} },
+                    { label: 'Online status', sub: showOnlineStatus ? 'Contacts can see when you\'re online' : 'Your online status is hidden', val: showOnlineStatus, set: (v) => { setShowOnlineStatus(v); localStorage.setItem('show_online_status', v ? 'on' : 'off') } },
                   ].map(({ label, sub, val, set }) => (
                     <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: `1px solid ${dm.border}` }}>
                       <div style={{ flex: 1 }}><div style={{ color: dm.text, fontSize: 14 }}>{label}</div><div style={{ color: dm.subtext, fontSize: 12 }}>{sub}</div></div>

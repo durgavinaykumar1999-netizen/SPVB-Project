@@ -48,7 +48,7 @@ function LoginPage({ onLogin }) {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ identifier: form.email, password: form.password }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {

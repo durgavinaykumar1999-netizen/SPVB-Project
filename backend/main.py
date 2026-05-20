@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import hashlib
+import hmac
 import re
 import shutil
 import time
@@ -24,6 +25,11 @@ from collections import defaultdict
 from pathlib import Path
 from dotenv import load_dotenv
 import random as _random
+try:
+    import bcrypt as _bcrypt
+    _BCRYPT_AVAILABLE = True
+except ImportError:
+    _BCRYPT_AVAILABLE = False
 
 load_dotenv()
 
@@ -622,18 +628,46 @@ security = HTTPBearer()
 # ── Auth helpers ──────────────────────────────────────────
 
 def hash_password(p: str) -> str:
+    if _BCRYPT_AVAILABLE:
+        return _bcrypt.hashpw(p.encode(), _bcrypt.gensalt(12)).decode()
     return hashlib.sha256(p.encode()).hexdigest()
 
 def verify_password(p: str, h: str) -> bool:
-    return hash_password(p) == h
+    if not h:
+        return False
+    # bcrypt hashes start with $2b$ or $2a$
+    if _BCRYPT_AVAILABLE and h.startswith("$2"):
+        return _bcrypt.checkpw(p.encode(), h.encode())
+    # legacy SHA-256 fallback (constant-time)
+    return hmac.compare_digest(hashlib.sha256(p.encode()).hexdigest(), h)
 
-def create_jwt_token(data: dict) -> str:
-    exp = datetime.utcnow() + timedelta(days=3650)
-    return jwt.encode({"exp": exp, **data}, os.getenv("JWT_SECRET", "secret"), algorithm=os.getenv("JWT_ALGORITHM", "HS256"))
+# in-memory login attempt tracker for rate limiting
+_login_attempts: dict = defaultdict(list)
+_MAX_LOGIN_ATTEMPTS = 10
+_LOGIN_WINDOW_SECONDS = 300  # 5 minutes
+
+def _check_rate_limit(identifier: str):
+    now = time.time()
+    attempts = _login_attempts[identifier]
+    # drop attempts outside the window
+    _login_attempts[identifier] = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
+    if len(_login_attempts[identifier]) >= _MAX_LOGIN_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again in 5 minutes.")
+    _login_attempts[identifier].append(now)
+
+def create_jwt_token(data: dict, days: int = 30) -> str:
+    secret = os.getenv("JWT_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=500, detail="Server configuration error")
+    exp = datetime.utcnow() + timedelta(days=days)
+    return jwt.encode({"exp": exp, **data}, secret, algorithm=os.getenv("JWT_ALGORITHM", "HS256"))
 
 def decode_jwt_token(token: str) -> dict:
     try:
-        return jwt.decode(token, os.getenv("JWT_SECRET", "secret"), algorithms=[os.getenv("JWT_ALGORITHM", "HS256")])
+        secret = os.getenv("JWT_SECRET", "")
+        if not secret:
+            raise HTTPException(status_code=500, detail="Server configuration error")
+        return jwt.decode(token, secret, algorithms=[os.getenv("JWT_ALGORITHM", "HS256")])
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.JWTError:
@@ -806,11 +840,12 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
                 continue
             msg_type = data.get("type", "")
             await ws_manager.send(target, {**data, "from": str(user_id)})
+            target_online = ws_manager.is_connected(target)
 
-            # ── Push notification for calls (fires even if target tab is open but backgrounded) ──
             if msg_type == "call_offer":
                 call_type = data.get("callType", "voice")
                 icon = "📹" if call_type == "video" else "📞"
+                # Always send call push — even if target has WS open (might be backgrounded on mobile)
                 threading.Thread(
                     target=_send_push,
                     args=(
@@ -822,6 +857,22 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
                     ),
                     daemon=True,
                 ).start()
+
+            elif msg_type == "chat_message":
+                # Push for WS-relayed messages when target is offline or has no active WS tab
+                if not target_online:
+                    content = data.get("content") or data.get("text") or "New message"
+                    preview = content[:80] if not str(content).startswith("__e2e__|") else "🔒 Encrypted message"
+                    threading.Thread(
+                        target=_send_push,
+                        args=(
+                            int(target),
+                            caller_display,
+                            preview,
+                            {"type": "message", "from": str(user_id)},
+                        ),
+                        daemon=True,
+                    ).start()
     except WebSocketDisconnect:
         ws_manager.disconnect(str(user_id))
         mdb_set_status(user_id, from_user[0], from_user[1], "offline")
@@ -933,11 +984,15 @@ def register(req: RegisterRequest):
 @app.post("/auth/login", response_model=TokenResponse)
 def login(req: LoginRequest):
     admin_email = os.getenv("ADMIN_EMAIL")
-    admin_password = os.getenv("ADMIN_PASSWORD")
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
     identifier = req.identifier.strip()
     is_email = "@" in identifier
 
-    if is_email and identifier == admin_email and req.password == admin_password:
+    # Rate limit by identifier
+    _check_rate_limit(identifier.lower())
+
+    # Constant-time admin password comparison to prevent timing attacks
+    if is_email and identifier == admin_email and hmac.compare_digest(req.password, admin_password):
         mdb_record_login(0, "admin", admin_email, "email", "admin")
         token = create_jwt_token({"user_id": 0, "username": "admin", "email": admin_email, "role": "admin"})
         return {"token": token, "user": {"id": 0, "username": "admin", "email": admin_email, "role": "admin"}}
@@ -972,7 +1027,7 @@ def verify_password_endpoint(body: dict, cu: dict = Depends(get_current_user)):
     user_id = cu["user_id"]
     # Admin has no DB record — compare directly to env
     if user_id == 0:
-        if pw == os.getenv("ADMIN_PASSWORD", ""):
+        if hmac.compare_digest(pw, os.getenv("ADMIN_PASSWORD", "")):
             return {"ok": True}
         raise HTTPException(status_code=401, detail="Wrong password")
     u = mdb_get_user_by_id(user_id)
@@ -1183,7 +1238,12 @@ def get_blocked_contacts(cu: dict = Depends(get_current_user)):
 def update_me(body: dict, cu: dict = Depends(get_current_user)):
     u = mdb_get_user_by_id(cu["user_id"])
     if not u:
-        raise HTTPException(status_code=404, detail="User not found")
+        # Fallback: try string id (covers edge cases from JWT type mismatch)
+        u = col_users.find_one({"id": str(cu["user_id"])}, {"_id": 0})
+        if u:
+            u = _strip_id(dict(u))
+        else:
+            raise HTTPException(status_code=404, detail="User not found")
     fields = {}
     if "display_name" in body:
         fields["display_name"] = str(body["display_name"])[:50]
@@ -1265,7 +1325,9 @@ def get_online_users(cu: dict = Depends(get_current_user)):
         if uid not in saved:
             continue
         diff = (now - _parse_dt(info["updated_at"])).total_seconds()
-        if diff < 60:
+        if info.get("status") == "hidden":
+            result[uid] = {**info, "online_status": "hidden"}
+        elif diff < 60:
             result[uid] = {**info, "online_status": "online"}
         elif diff < 300:
             result[uid] = {**info, "online_status": "away"}
@@ -1320,9 +1382,8 @@ def admin_stats(cu: dict = Depends(get_current_user)):
 @app.post("/messages")
 async def create_message(msg: MessageRequest, cu: dict = Depends(get_current_user)):
     _now = datetime.utcnow()
-    _user = mdb_get_user_by_id(cu["user_id"]) or {}
-    _days = _user.get("msg_retention_days", 0)
-    _expires = (_now + timedelta(days=_days)).isoformat() + "Z" if _days else "9999-12-31T23:59:59Z"
+    # Server keeps messages for 30 days max — each client filters by their own retention setting
+    _expires = (_now + timedelta(days=30)).isoformat() + "Z"
     message = {
         "from_user_id": cu["user_id"],
         "from_username": cu.get("username", ""),
@@ -1426,7 +1487,7 @@ async def send_media_message(
         "encrypted": False,
         "is_read": False,
         "created_at": _now.isoformat() + "Z",
-        "expires_at": (_now + timedelta(days=(mdb_get_user_by_id(my_id) or {}).get("msg_retention_days", 0) or 36500)).isoformat() + "Z",
+        "expires_at": (_now + timedelta(days=30)).isoformat() + "Z",
     }
     message = db_save_message(message)
     await ws_manager.send(str(recipient_id), {"type": "chat_message", "message": message})
@@ -1831,7 +1892,7 @@ async def send_group_message(group_id: int, body: GroupMessageRequest, cu: dict 
         raise HTTPException(status_code=403, detail="Not a member")
     user_map = {u["id"]: u for u in mdb_get_users()}
     now = datetime.utcnow()
-    msg = {"group_id": group_id, "from_user_id": my_id, "content": body.content[:4000], "media_url": None, "media_type": None, "file_name": None, "reply_to": body.reply_to, "created_at": now.isoformat() + "Z", "expires_at": (now + timedelta(hours=24)).isoformat() + "Z"}
+    msg = {"group_id": group_id, "from_user_id": my_id, "content": body.content[:4000], "media_url": None, "media_type": None, "file_name": None, "reply_to": body.reply_to, "created_at": now.isoformat() + "Z", "expires_at": (now + timedelta(days=30)).isoformat() + "Z"}
     msg = mdb_save_group_message(msg)
     sender_name = user_map[my_id].get("display_name", user_map[my_id]["username"]) if my_id in user_map else str(my_id)
     sender_avatar = user_map[my_id].get("avatar_url", "") if my_id in user_map else ""
@@ -1853,12 +1914,9 @@ async def send_group_media(group_id: int, file: UploadFile = File(...), cu: dict
     if len(data) > _SIZE_MAP.get(mtype, LIMIT_DOC):
         raise HTTPException(status_code=413, detail=f"File too large. Max size for {mtype}s is {_SIZE_LABEL.get(mtype, '25 MB')}.")
     url = _upload_media(data, ext, mtype, folder=f"spvb/groups/{group_id}")
-    _sender = mdb_get_user_by_id(my_id) or {}
-    _days = _sender.get("msg_retention_days", 0)
     user_map = {u["id"]: u for u in mdb_get_users()}
     now = datetime.utcnow()
-    _expires = (now + timedelta(days=_days)).isoformat() + "Z" if _days else "9999-12-31T23:59:59Z"
-    msg = {"group_id": group_id, "from_user_id": my_id, "content": "", "media_url": url, "media_type": mtype, "file_name": file.filename, "reply_to": None, "created_at": now.isoformat() + "Z", "expires_at": _expires}
+    msg = {"group_id": group_id, "from_user_id": my_id, "content": "", "media_url": url, "media_type": mtype, "file_name": file.filename, "reply_to": None, "created_at": now.isoformat() + "Z", "expires_at": (now + timedelta(days=30)).isoformat() + "Z"}
     msg = mdb_save_group_message(msg)
     sender_name = user_map[my_id].get("display_name", user_map[my_id]["username"]) if my_id in user_map else str(my_id)
     sender_avatar = user_map[my_id].get("avatar_url", "") if my_id in user_map else ""
