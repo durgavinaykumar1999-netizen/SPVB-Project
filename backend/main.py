@@ -206,7 +206,7 @@ _data_lock = threading.Lock()
 
 def mdb_get_users(projection: dict = None) -> list:
     proj = projection or {"_id": 0}
-    return [_strip_id(u) for u in col_users.find({}, proj)]
+    return [_strip_id(u) for u in col_users.find({"id": {"$exists": True}}, proj)]
 
 def mdb_get_user_by_id(uid: int) -> Optional[dict]:
     doc = col_users.find_one({"id": uid}, {"_id": 0})
