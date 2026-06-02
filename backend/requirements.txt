@@ -1,0 +1,16 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+websockets==13.1
+pymongo==4.10.1
+python-dotenv==1.0.1
+python-jose==3.3.0
+python-multipart==0.0.20
+pydantic==2.10.6
+email-validator==2.2.0
+passlib==1.7.4
+bcrypt==4.2.1
+cryptography==44.0.2
+dnspython==2.7.0
+cloudinary>=1.36.0
+pywebpush>=2.0.0
+firebase-admin>=6.3.0
