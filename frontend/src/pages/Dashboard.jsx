@@ -935,11 +935,17 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                 // No backup on server — first login on any device, generate fresh key
                 console.log('[E2Ev2] No server backup — generating fresh key')
                 const pw = sessionStorage.getItem('e2e_pw') || null
+                const isGoogle = localStorage.getItem('google_auth') === 'true'
                 if (pw) {
+                  // Password user or Google user with password in session
                   setupMasterKeyAfterLogin({ userId: uid, password: pw, token: tok, apiUrl })
                     .then(kp => {
                       if (kp) { v2PrivKeyRef.current = kp.privateKey; v2PubKeyRef.current = kp.publicKey }
                     }).catch(() => {})
+                } else if (isGoogle) {
+                  // Google user with no password in session — ask them for password to set up keys
+                  console.log('[E2Ev2] Google user with no backup — asking for password to set up encryption')
+                  setE2ePasswordNeeded(true)
                 }
               }
             }
@@ -955,39 +961,60 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   }, [user?.id])
 
   // Restore BOTH V1 ECDH + V2 RSA keys from backup using the user's password
+  // OR setup new encryption password for Google users with no backup
   const restoreE2eKeyWithPassword = async (password) => {
     setE2ePasswordLoading(true)
     setE2ePasswordError('')
     try {
       const tok = localStorage.getItem('token')
       const uid = user?.id
+      const isGoogle = localStorage.getItem('google_auth') === 'true'
 
-      // CRITICAL: delete any wrong fresh key from IndexedDB first
-      // so setupMasterKeyAfterLogin doesn't find it and return early
-      await deleteMasterKeyPair(String(uid))
-      await deleteStoredKeyPair(uid)
-      console.log('[E2Ev2] Cleared wrong IndexedDB keys — restoring from server backup...')
+      // Check if there's a server backup to restore
+      const backupRes = await fetch(apiUrl('/api/users/me/key-backup-v2'), {
+        headers: { Authorization: `Bearer ${tok}` }
+      })
+      const backupData = await backupRes.json().catch(() => ({}))
+      const hasBackup = backupData.backup && backupData.backup.length > 10
 
-      // Restore V2 RSA key from server backup using password
-      const kp = await setupMasterKeyAfterLogin({ userId: uid, password, token: tok, apiUrl })
-      if (!kp) throw new Error('Backup restore failed — check your password')
-      v2PrivKeyRef.current = kp.privateKey
-      v2PubKeyRef.current  = kp.publicKey
-      console.log('[E2Ev2] RSA key restored from password ✅')
+      if (!hasBackup && isGoogle) {
+        // Google user with no backup — setup new encryption key
+        console.log('[E2Ev2] Google user setting up new encryption key...')
+        sessionStorage.setItem('e2e_pw', password)
+        const kp = await setupMasterKeyAfterLogin({ userId: uid, password, token: tok, apiUrl })
+        if (!kp) throw new Error('Key setup failed')
+        v2PrivKeyRef.current = kp.privateKey
+        v2PubKeyRef.current = kp.publicKey
+        console.log('[E2Ev2] New RSA encryption key setup ✅')
+      } else if (hasBackup) {
+        // Has backup — restore from it
+        console.log('[E2Ev2] Restoring from server backup...')
+        // CRITICAL: delete any wrong fresh key from IndexedDB first
+        await deleteMasterKeyPair(String(uid))
+        await deleteStoredKeyPair(uid)
+        console.log('[E2Ev2] Cleared wrong IndexedDB keys')
 
-      // Restore V1 ECDH key from server backup
-      try {
-        const r = await fetch(apiUrl('/api/users/me/key-backup'), { headers: { Authorization: `Bearer ${tok}` } })
-        if (r.ok) {
-          const { backup } = await r.json()
-          if (backup) {
-            const { privateKey, publicKeyJwk } = await replaceKeyPairFromBackup(backup, password, uid)
-            e2ePrivKeyRef.current   = privateKey
-            e2ePubKeyJwkRef.current = publicKeyJwk
-            console.log('[E2E] V1 ECDH key restored ✅')
+        // Restore V2 RSA key from server backup using password
+        const kp = await setupMasterKeyAfterLogin({ userId: uid, password, token: tok, apiUrl })
+        if (!kp) throw new Error('Backup restore failed — check your password')
+        v2PrivKeyRef.current = kp.privateKey
+        v2PubKeyRef.current = kp.publicKey
+        console.log('[E2Ev2] RSA key restored from password ✅')
+
+        // Restore V1 ECDH key from server backup
+        try {
+          const r = await fetch(apiUrl('/api/users/me/key-backup'), { headers: { Authorization: `Bearer ${tok}` } })
+          if (r.ok) {
+            const { backup } = await r.json()
+            if (backup) {
+              const { privateKey, publicKeyJwk } = await replaceKeyPairFromBackup(backup, password, uid)
+              e2ePrivKeyRef.current = privateKey
+              e2ePubKeyJwkRef.current = publicKeyJwk
+              console.log('[E2E] V1 ECDH key restored ✅')
+            }
           }
-        }
-      } catch { /* V1 restore optional */ }
+        } catch { /* V1 restore optional */ }
+      }
 
       contactPubKeysRef.current = {}
       localStorage.setItem(`e2e_ready_${uid}`, '1')
@@ -1004,7 +1031,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       setTimeout(() => decryptAllPending(v1Key), 8000)
     } catch (err) {
       console.warn('[E2Ev2] Restore failed:', err?.message)
-      setE2ePasswordError('Incorrect password. Please try again.')
+      setE2ePasswordError(err.message || 'Failed to setup encryption. Please try again.')
     }
     setE2ePasswordLoading(false)
   }
@@ -8456,15 +8483,17 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
         </div>
       )}
 
-      {/* ── E2E Key Restore Modal — shown after QR/new device login ── */}
+      {/* ── E2E Key Restore Modal — shown after QR/new device login or for Google users ── */}
       {e2ePasswordNeeded && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
           <div style={{ background: '#1e293b', borderRadius: 16, padding: 32, width: '100%', maxWidth: 380, boxShadow: '0 24px 60px rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
             <div style={{ textAlign: 'center', marginBottom: 20 }}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>🔐</div>
-              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>Restore Encryption Keys</h2>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>Encryption Password</h2>
               <p style={{ margin: '8px 0 0', fontSize: 13, color: '#94a3b8', lineHeight: 1.5 }}>
-                Enter your password to decrypt your messages on this device.
+                {isGoogleUser()
+                  ? 'Enter your account password to decrypt your messages and setup encryption on this device.'
+                  : 'Enter your password to decrypt your messages on this device.'}
               </p>
             </div>
             <input

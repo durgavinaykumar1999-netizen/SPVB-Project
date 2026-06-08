@@ -239,7 +239,8 @@ function LoginForm({ onLogin }) {
         silentlyRefreshGoogleTokens(GOOGLE_CLIENT_ID)
         // For Google users, E2E setup will be handled by Dashboard with password modal
         // Don't call setupMasterKeyAfterLogin here since we don't have a password
-        onLogin?.(); navigate('/dashboard')
+        // Don't navigate here - let App routing handle it after state updates
+        onLogin?.()
       }
     } catch (err) { setError(err.message) }
     finally { setGoogleLoading(false) }
