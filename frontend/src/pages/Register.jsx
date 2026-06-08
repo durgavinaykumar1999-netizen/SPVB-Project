@@ -1,4 +1,5 @@
 import { apiUrl } from '../utils/api'
+import { setupMasterKeyAfterLogin } from '../utils/e2eV2'
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { requestAllGooglePermissions, silentlyRefreshGoogleTokens } from '../utils/googleTokens'
@@ -102,7 +103,10 @@ export default function Register({ onLogin }) {
       if (!data.token) throw new Error('Registration failed: no token received')
       localStorage.setItem('token', data.token)
       localStorage.setItem('user', JSON.stringify(data.user || {}))
-      sessionStorage.setItem('e2e_pw', form.password) // used once to upload E2E key backup, then cleared
+      sessionStorage.setItem('e2e_pw', form.password)
+      // Setup V2 RSA-OAEP master key on registration
+      setupMasterKeyAfterLogin({ userId: data.user?.id, password: form.password, token: data.token, apiUrl })
+        .catch(err => console.warn('[E2Ev2] setup failed on register:', err?.message))
       onLogin?.()
       navigate('/set-name')
     } catch (err) {

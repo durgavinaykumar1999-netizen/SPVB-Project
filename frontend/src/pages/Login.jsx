@@ -1,4 +1,5 @@
 import { apiUrl, wsUrl } from '../utils/api'
+import { setupMasterKeyAfterLogin } from '../utils/e2eV2'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
@@ -63,15 +64,18 @@ function QRPanel({ onLogin }) {
       // WS for real-time approval
       const ws = new WebSocket(wsUrl(`/ws/qr/${tok}`))
       wsRef.current = ws
-      ws.onmessage = (ev) => {
+      ws.onmessage = async (ev) => {
         try {
           const msg = JSON.parse(ev.data)
           if (msg.type === 'qr_approved' && msg.token) {
             clearInterval(timerRef.current)
-            setStatus('approved')
             localStorage.setItem('token', msg.token)
             if (msg.user) localStorage.setItem('user', JSON.stringify(msg.user))
             if (msg.session_id) localStorage.setItem('session_id', msg.session_id)
+            setStatus('approved')
+            // Navigate to dashboard — key restore happens there via password modal
+            // Do NOT call setupMasterKeyAfterLogin here without a password:
+            // it would generate a fresh wrong key, overwriting the correct backup
             onLogin?.()
           }
         } catch {}
@@ -246,6 +250,12 @@ function LoginForm({ onLogin }) {
       localStorage.setItem('user', JSON.stringify(data.user || {}))
       if (data.session_id) localStorage.setItem('session_id', data.session_id)
       sessionStorage.setItem('e2e_pw', form.password)
+      // Setup V2 RSA-OAEP master key — AWAIT before navigating so key is in IndexedDB when Dashboard loads
+      try {
+        await setupMasterKeyAfterLogin({ userId: data.user?.id, password: form.password, token: data.token, apiUrl })
+      } catch (err) {
+        console.warn('[E2Ev2] setup failed on login:', err?.message)
+      }
       onLogin?.()
       navigate('/dashboard')
     } catch (err) { setError(err.message) }

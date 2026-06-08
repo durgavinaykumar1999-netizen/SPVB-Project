@@ -128,21 +128,245 @@ def _fix_mongo_uri(uri: str) -> str:
         return uri
 
 _MONGO_URI = _fix_mongo_uri(os.getenv("MONGODB_URI", ""))
-_mongo_client = MongoClient(
-    _MONGO_URI,
-    maxPoolSize=50,          # max 50 DB connections in the pool (Atlas free = 100 max)
-    minPoolSize=5,           # keep 5 warm connections ready
-    serverSelectionTimeoutMS=5000,
-    connectTimeoutMS=5000,
-    socketTimeoutMS=10000,
-    retryWrites=True,
-)
-# Use the database name from the URI, fallback to "spvb"
-try:
-    _db_name = _MONGO_URI.rsplit("/", 1)[-1].split("?")[0].strip() or "spvb"
-except Exception:
+
+def _apply_projection(doc: dict, proj: dict) -> dict:
+    """Apply a MongoDB-style projection dict to a document (Python-side filtering)."""
+    if not proj or not doc:
+        return doc
+    # Determine include vs exclude mode
+    vals = [v for k, v in proj.items() if k != "_id"]
+    if not vals:
+        return doc
+    include_mode = bool(vals[0])  # 1 = include, 0 = exclude
+    if include_mode:
+        result = {}
+        for k in proj:
+            if proj[k] and k in doc:
+                result[k] = doc[k]
+        if proj.get("_id", 1) and "_id" in doc:
+            result["_id"] = doc["_id"]
+        return result
+    else:
+        result = dict(doc)
+        for k, v in proj.items():
+            if not v and k in result:
+                del result[k]
+        return result
+
+def _py_match(doc: dict, filter: dict) -> bool:
+    """Python-side MongoDB filter evaluation for operators mongita doesn't support."""
+    import re as _re
+    for key, cond in filter.items():
+        if key == "$or":
+            if not any(_py_match(doc, sub) for sub in cond):
+                return False
+            continue
+        if key == "$and":
+            if not all(_py_match(doc, sub) for sub in cond):
+                return False
+            continue
+        val = doc.get(key)
+        if isinstance(cond, dict):
+            for op, operand in cond.items():
+                if op == "$exists":
+                    if operand and key not in doc:
+                        return False
+                    if not operand and key in doc:
+                        return False
+                elif op == "$regex":
+                    if not val or not _re.search(operand, str(val)):
+                        return False
+                elif op == "$eq":
+                    if val != operand:
+                        return False
+                elif op == "$ne":
+                    if val == operand:
+                        return False
+                elif op == "$gt":
+                    if not (val is not None and val > operand):
+                        return False
+                elif op == "$gte":
+                    if not (val is not None and val >= operand):
+                        return False
+                elif op == "$lt":
+                    if not (val is not None and val < operand):
+                        return False
+                elif op == "$lte":
+                    if not (val is not None and val <= operand):
+                        return False
+                elif op == "$in":
+                    if val not in operand:
+                        return False
+                elif op == "$nin":
+                    if val in operand:
+                        return False
+        else:
+            if val != cond:
+                return False
+    return True
+
+
+def _local_find_all(collection, filter=None, projection=None):
+    """Fetch all docs from a mongita collection, apply Python-side filter + projection."""
+    try:
+        all_docs = list(collection.find({}))
+    except Exception:
+        return []
+    results = []
+    for d in all_docs:
+        doc = dict(d)
+        if filter and not _py_match(doc, filter):
+            continue
+        if projection:
+            doc = _apply_projection(doc, projection)
+        results.append(doc)
+    return results
+
+
+class _LocalCursor:
+    """Wraps a mongita cursor to support sort/limit/skip chaining (Python-side)."""
+    def __init__(self, cursor, projection=None):
+        self._cursor = cursor
+        self._projection = projection
+        self._sort_key = None
+        self._sort_dir = None
+        self._limit_n = None
+        self._skip_n = 0
+
+    def sort(self, key, direction=None):
+        if isinstance(key, list):
+            self._sort_key = key[0][0] if key else None
+            self._sort_dir = key[0][1] if key else 1
+        else:
+            self._sort_key = key
+            self._sort_dir = direction if direction is not None else 1
+        return self
+
+    def limit(self, n):
+        self._limit_n = n
+        return self
+
+    def skip(self, n):
+        self._skip_n = n
+        return self
+
+    def _resolve(self):
+        docs = [dict(d) for d in self._cursor]
+        if self._sort_key:
+            reverse = (self._sort_dir == -1)
+            docs.sort(key=lambda d: d.get(self._sort_key) or 0, reverse=reverse)
+        if self._skip_n:
+            docs = docs[self._skip_n:]
+        if self._limit_n:
+            docs = docs[:self._limit_n]
+        if self._projection:
+            docs = [_apply_projection(d, self._projection) for d in docs]
+        return docs
+
+    def __iter__(self):
+        return iter(self._resolve())
+
+    def __len__(self):
+        return len(self._resolve())
+
+
+class _LocalCollection:
+    """Thin wrapper around a mongita collection for PyMongo compatibility."""
+    def __init__(self, col):
+        self._col = col
+
+    def find_one(self, filter=None, projection=None, **kw):
+        f = filter or {}
+        try:
+            doc = self._col.find_one(f)
+        except Exception:
+            # Fallback: fetch all and filter in Python
+            docs = _local_find_all(self._col, f, projection)
+            return docs[0] if docs else None
+        if doc is None:
+            return None
+        doc = dict(doc)
+        if projection:
+            doc = _apply_projection(doc, projection)
+        return doc
+
+    def find(self, filter=None, projection=None, **kw):
+        f = filter or {}
+        try:
+            cursor = self._col.find(f)
+            return _LocalCursor(cursor, projection)
+        except Exception:
+            # Fallback: fetch all and filter in Python
+            docs = _local_find_all(self._col, f, projection)
+            return _LocalCursor(iter(docs), None)  # already projected
+
+    def insert_one(self, doc):
+        return self._col.insert_one(doc)
+
+    def replace_one(self, filter, replacement, upsert=False):
+        return self._col.replace_one(filter, replacement, upsert=upsert)
+
+    def update_one(self, filter, update, upsert=False):
+        return self._col.update_one(filter, update, upsert=upsert)
+
+    def update_many(self, filter, update):
+        return self._col.update_many(filter, update)
+
+    def delete_one(self, filter):
+        return self._col.delete_one(filter)
+
+    def delete_many(self, filter):
+        return self._col.delete_many(filter)
+
+    def count_documents(self, filter=None):
+        return self._col.count_documents(filter or {})
+
+    def aggregate(self, pipeline):
+        # mongita doesn't support aggregate — return empty list for local mode
+        return []
+
+    def create_index(self, key, **kw):
+        try:
+            # Remove unsupported kwargs
+            safe_kw = {k: v for k, v in kw.items() if k not in ('unique', 'sparse', 'background')}
+            self._col.create_index(key, **safe_kw)
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._col, name)
+
+class _LocalDb:
+    """Wraps a mongita database to return _LocalCollection instances."""
+    def __init__(self, db):
+        self._db = db
+    def __getitem__(self, name):
+        return _LocalCollection(self._db[name])
+
+if not _MONGO_URI:
+    from mongita import MongitaClientDisk
+    _local_data_dir = Path(os.getenv("LOCAL_DATA_DIR", "./data/localdb"))
+    _local_data_dir.mkdir(parents=True, exist_ok=True)
+    _mongita_client = MongitaClientDisk(str(_local_data_dir))
+    mdb = _LocalDb(_mongita_client["spvb"])
     _db_name = "spvb"
-mdb = _mongo_client[_db_name]
+    print(f"[DB] Local mode — data stored in {_local_data_dir.resolve()}")
+else:
+    _mongo_client = MongoClient(
+        _MONGO_URI,
+        maxPoolSize=50,
+        minPoolSize=5,
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=5000,
+        socketTimeoutMS=10000,
+        retryWrites=True,
+    )
+    try:
+        _db_name = _MONGO_URI.rsplit("/", 1)[-1].split("?")[0].strip() or "spvb"
+    except Exception:
+        _db_name = "spvb"
+    mdb = _mongo_client[_db_name]
+    print(f"[DB] MongoDB mode — {_db_name}")
 
 # Collections — users/auth separate from chat messages
 col_users          = mdb["users"]
@@ -163,32 +387,35 @@ col_password_reset = mdb["password_reset_tokens"]
 col_push_subs      = mdb["push_subscriptions"]   # web push subscriptions
 col_sessions       = mdb["login_sessions"]        # all active login sessions across devices
 
-# Indexes
-col_users.create_index("id", unique=True)
-col_users.create_index("email", unique=True)
-col_users.create_index("username")
-col_messages.create_index([("room", ASCENDING), ("expires_at", ASCENDING)])
-col_messages.create_index("id", unique=True)
-# Indexes for get_recent_conversations (from_user_id/recipient_id DM lookup)
-col_messages.create_index([("from_user_id", ASCENDING), ("expires_at", ASCENDING)])
-col_messages.create_index([("recipient_id", ASCENDING), ("expires_at", ASCENDING)])
-col_messages.create_index([("from_user_id", ASCENDING), ("recipient_id", ASCENDING), ("expires_at", ASCENDING)])
-col_login_events.create_index("id")
-col_statuses.create_index("id")
-col_statuses.create_index([("user_id", ASCENDING), ("expires_at", ASCENDING)])
-col_groups.create_index("id", unique=True)
-col_group_messages.create_index("id", unique=True)
-col_group_messages.create_index([("group_id", ASCENDING), ("expires_at", ASCENDING)])
-col_call_logs.create_index("id", unique=True)
-col_call_logs.create_index([("caller_id", ASCENDING)])
-col_call_logs.create_index([("callee_id", ASCENDING)])
-col_user_status.create_index("user_id", unique=True)
-col_qr_tokens.create_index("token", unique=True)
-col_qr_tokens.create_index("expires_at")
-col_linked_devices.create_index("id", unique=True)
-col_push_subs.create_index("user_id")  # not unique — one user can have multiple device subscriptions
-col_sessions.create_index("id", unique=True)
-col_sessions.create_index("user_id")
+# Indexes (wrapped — mongita supports basic indexes; compound/unique silently ignored)
+def _idx(col, key, **kw):
+    try: col.create_index(key, **kw)
+    except Exception: pass
+
+_idx(col_users, "id", unique=True)
+_idx(col_users, "email", unique=True)
+_idx(col_users, "username")
+_idx(col_messages, [("room", ASCENDING), ("expires_at", ASCENDING)])
+_idx(col_messages, "id", unique=True)
+_idx(col_messages, [("from_user_id", ASCENDING), ("expires_at", ASCENDING)])
+_idx(col_messages, [("recipient_id", ASCENDING), ("expires_at", ASCENDING)])
+_idx(col_messages, [("from_user_id", ASCENDING), ("recipient_id", ASCENDING), ("expires_at", ASCENDING)])
+_idx(col_login_events, "id")
+_idx(col_statuses, "id")
+_idx(col_statuses, [("user_id", ASCENDING), ("expires_at", ASCENDING)])
+_idx(col_groups, "id", unique=True)
+_idx(col_group_messages, "id", unique=True)
+_idx(col_group_messages, [("group_id", ASCENDING), ("expires_at", ASCENDING)])
+_idx(col_call_logs, "id", unique=True)
+_idx(col_call_logs, [("caller_id", ASCENDING)])
+_idx(col_call_logs, [("callee_id", ASCENDING)])
+_idx(col_user_status, "user_id", unique=True)
+_idx(col_qr_tokens, "token", unique=True)
+_idx(col_qr_tokens, "expires_at")
+_idx(col_linked_devices, "id", unique=True)
+_idx(col_push_subs, "user_id")
+_idx(col_sessions, "id", unique=True)
+_idx(col_sessions, "user_id")
 
 # ── MongoDB Helpers ───────────────────────────────────────
 
@@ -197,8 +424,15 @@ def _strip_id(doc: dict) -> dict:
     return doc
 
 def _next_id(collection) -> int:
-    docs = list(collection.find({}, {"id": 1, "_id": 0}).sort("id", DESCENDING).limit(1))
-    return (docs[0]["id"] + 1) if docs else 1
+    try:
+        docs = list(collection.find({}, {"id": 1, "_id": 0}).sort("id", DESCENDING).limit(1))
+    except Exception:
+        # Fallback for local mode (mongita doesn't support sort+limit chaining)
+        docs = list(collection.find({}, {"id": 1, "_id": 0}))
+        docs = [d for d in docs if isinstance(d.get("id"), int)]
+    if not docs:
+        return 1
+    return max(d["id"] for d in docs if isinstance(d.get("id"), int)) + 1
 
 _data_lock = threading.Lock()
 
@@ -206,7 +440,7 @@ _data_lock = threading.Lock()
 
 def mdb_get_users(projection: dict = None) -> list:
     proj = projection or {"_id": 0}
-    return [_strip_id(u) for u in col_users.find({"id": {"$exists": True}}, proj)]
+    return [_strip_id(u) for u in col_users.find({}, proj) if u.get("id") is not None]
 
 def mdb_get_user_by_id(uid: int) -> Optional[dict]:
     doc = col_users.find_one({"id": uid}, {"_id": 0})
@@ -254,6 +488,8 @@ def _row_to_msg(doc: dict) -> dict:
         "file_name":    doc.get("file_name") or None,
         "status":       doc.get("status", "sent"),   # sent | delivered | seen
         "seen_at":      doc.get("seen_at") or None,
+        "encrypted_key_for_sender":   doc.get("encrypted_key_for_sender") or None,
+        "encrypted_key_for_receiver": doc.get("encrypted_key_for_receiver") or None,
     }
 
 def db_save_message(msg: dict) -> dict:
@@ -276,6 +512,8 @@ def db_save_message(msg: dict) -> dict:
             "expires_at":   msg.get("expires_at", ""),
             "status":       "sent",    # sent → delivered → seen
             "seen_at":      None,      # set when receiver opens the chat
+            "encrypted_key_for_sender":   msg.get("encrypted_key_for_sender"),
+            "encrypted_key_for_receiver": msg.get("encrypted_key_for_receiver"),
         }
         col_messages.insert_one(doc)
     msg["id"] = new_id
@@ -489,7 +727,7 @@ def mdb_delete_reset_token(email: str):
 
 def mdb_find_reset_token_by_code(code: str) -> tuple:
     doc = col_password_reset.find_one({"code": code}, {"_id": 0})
-    if not doc:
+    if doc is None:
         return None, None
     email = doc.get("email")
     return email, _strip_id(dict(doc))
@@ -884,8 +1122,8 @@ else:
 # ── Firebase Cloud Messaging (FCM) ───────────────────────
 _fcm_app = None
 col_fcm_tokens = mdb["fcm_tokens"]
-col_fcm_tokens.create_index("user_id")
-col_fcm_tokens.create_index("session_id")
+_idx(col_fcm_tokens, "user_id")
+_idx(col_fcm_tokens, "session_id")
 
 def _init_firebase():
     global _fcm_app
@@ -1260,6 +1498,8 @@ class MessageRequest(BaseModel):
     encrypted: Optional[bool] = False
     reply_to: Optional[dict] = None
     preview: Optional[str] = None  # plain-text snippet for push notification body only
+    encrypted_key_for_sender:   Optional[str] = None  # RSA-OAEP wrapped AES key for sender (E2E V2)
+    encrypted_key_for_receiver: Optional[str] = None  # RSA-OAEP wrapped AES key for receiver (E2E V2)
 
 class StatusRequest(BaseModel):
     content: str
@@ -1277,7 +1517,8 @@ class UserStatusUpdate(BaseModel):
 async def qr_ws_endpoint(websocket: WebSocket, token: str):
     await websocket.accept()
     key = f"qr_{token}"
-    ws_manager.connections[key] = websocket
+    # Store as list so ws_manager.send() works correctly
+    ws_manager.connections[key] = [websocket]
     try:
         while True:
             await asyncio.sleep(1)
@@ -1286,7 +1527,15 @@ async def qr_ws_endpoint(websocket: WebSocket, token: str):
                 await websocket.send_json({"type": "qr_expired"})
                 break
             if rec["status"] == "approved":
-                await websocket.send_json({"type": "qr_approved", "jwt": rec.get("jwt", "")})
+                # Use "token" key (matches frontend check: msg.token)
+                jwt_val = rec.get("jwt", "") or rec.get("token", "")
+                user_data = rec.get("user_payload") or {}
+                await websocket.send_json({
+                    "type": "qr_approved",
+                    "token": jwt_val,
+                    "session_id": rec.get("session_id", ""),
+                    "user": user_data,
+                })
                 break
             if rec["status"] == "rejected":
                 await websocket.send_json({"type": "qr_rejected"})
@@ -1421,18 +1670,36 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
 
 @app.put("/users/me/pubkey")
 def set_pubkey(body: dict, cu: dict = Depends(get_current_user)):
-    mdb_update_user(cu["user_id"], {"pubkey": body.get("pubkey", "")})
+    # Only store if it looks like an ECDH key (kty=EC) — reject RSA keys here
+    raw = body.get("pubkey", "")
+    mdb_update_user(cu["user_id"], {"pubkey": raw})
     return {"ok": True}
 
 @app.get("/users/{user_id}/pubkey")
 def get_pubkey(user_id: int, cu: dict = Depends(get_current_user)):
     doc = col_users.find_one({"id": user_id}, {"_id": 0, "pubkey": 1})
-    if not doc:
+    if doc is None:
         raise HTTPException(status_code=404, detail="User not found")
-    pubkey = doc.get("pubkey") or ""  # never return None — always string
+    pubkey = doc.get("pubkey") or ""
     return JSONResponse(
         content={"pubkey": pubkey, "user_id": user_id},
-        # Only cache non-empty pubkeys — don't cache "no key" state
+        headers={"Cache-Control": "public, max-age=60" if pubkey else "no-store"},
+    )
+
+# V2 RSA-OAEP pubkey — stored separately so V1 ECDH key is never overwritten
+@app.put("/users/me/pubkey_v2")
+def set_pubkey_v2(body: dict, cu: dict = Depends(get_current_user)):
+    mdb_update_user(cu["user_id"], {"pubkey_v2": body.get("pubkey", "")})
+    return {"ok": True}
+
+@app.get("/users/{user_id}/pubkey_v2")
+def get_pubkey_v2(user_id: int, cu: dict = Depends(get_current_user)):
+    doc = col_users.find_one({"id": user_id}, {"_id": 0, "pubkey_v2": 1})
+    if doc is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    pubkey = doc.get("pubkey_v2") or ""
+    return JSONResponse(
+        content={"pubkey": pubkey, "user_id": user_id},
         headers={"Cache-Control": "public, max-age=60" if pubkey else "no-store"},
     )
 
@@ -1471,7 +1738,7 @@ def get_e2e_status(cu: dict = Depends(get_current_user)):
 
 @app.put("/users/me/key-backup")
 def set_key_backup(body: dict, cu: dict = Depends(get_current_user)):
-    """Store the user's ECDH private key encrypted with their password (PBKDF2+AES-GCM)."""
+    """Store V1 ECDH private key encrypted with password (PBKDF2+AES-GCM)."""
     backup = body.get("backup", "")
     if not backup:
         raise HTTPException(status_code=400, detail="backup required")
@@ -1480,9 +1747,46 @@ def set_key_backup(body: dict, cu: dict = Depends(get_current_user)):
 
 @app.get("/users/me/key-backup")
 def get_key_backup(cu: dict = Depends(get_current_user)):
-    """Retrieve the user's encrypted ECDH private key backup."""
+    """Retrieve V1 ECDH encrypted private key backup."""
     u = mdb_get_user_by_id(cu["user_id"])
     return {"backup": u.get("e2e_key_backup", "") if u else ""}
+
+# ── V2 RSA-OAEP Key Backup — separate field, never overwrites V1 ──────────
+
+@app.put("/users/me/key-backup-v2")
+def set_key_backup_v2(body: dict, cu: dict = Depends(get_current_user)):
+    """Store V2 RSA-OAEP private key encrypted with password (PBKDF2+AES-GCM)."""
+    backup = body.get("backup", "")
+    if not backup:
+        raise HTTPException(status_code=400, detail="backup required")
+    mdb_update_user(cu["user_id"], {"e2e_key_backup_v2": backup})
+    return {"ok": True}
+
+@app.get("/users/me/key-backup-v2")
+def get_key_backup_v2(cu: dict = Depends(get_current_user)):
+    """Retrieve V2 RSA-OAEP encrypted private key backup."""
+    u = mdb_get_user_by_id(cu["user_id"])
+    return {"backup": u.get("e2e_key_backup_v2", "") if u else ""}
+
+@app.put("/users/me/password")
+def change_password(body: dict, cu: dict = Depends(get_current_user)):
+    """Change password and re-encrypt both key backups atomically."""
+    old_pw  = body.get("old_password", "")
+    new_pw  = body.get("new_password", "")
+    v1_backup = body.get("key_backup_v1", "")
+    v2_backup = body.get("key_backup_v2", "")
+    if not old_pw or not new_pw:
+        raise HTTPException(status_code=400, detail="old_password and new_password required")
+    u = mdb_get_user_by_id(cu["user_id"])
+    if not u or not verify_password(old_pw, u.get("password", "")):
+        raise HTTPException(status_code=401, detail="Wrong current password")
+    fields: dict = {"password": hash_password(new_pw)}
+    if v1_backup:
+        fields["e2e_key_backup"] = v1_backup
+    if v2_backup:
+        fields["e2e_key_backup_v2"] = v2_backup
+    mdb_update_user(cu["user_id"], fields)
+    return {"ok": True}
 
 # ── Push Notifications ────────────────────────────────────
 
@@ -1969,15 +2273,17 @@ def get_online_users(cu: dict = Depends(get_current_user)):
         if uid not in saved:
             continue
         diff = (now - _parse_dt(info["updated_at"])).total_seconds()
+        # Strip non-serializable fields (ObjectId from mongita)
+        clean = {k: str(v) if hasattr(v, '__class__') and v.__class__.__name__ == 'ObjectId' else v
+                 for k, v in info.items() if k != "_id"}
         if info.get("status") == "hidden":
-            result[uid] = {**info, "online_status": "hidden"}
+            result[uid] = {**clean, "online_status": "hidden"}
         elif diff < 60:
-            result[uid] = {**info, "online_status": "online"}
+            result[uid] = {**clean, "online_status": "online"}
         elif diff < 300:
-            result[uid] = {**info, "online_status": "away"}
+            result[uid] = {**clean, "online_status": "away"}
         else:
-            result[uid] = {**info, "online_status": "offline"}
-    # Cache for 5 seconds — reduces DB hits when many users poll simultaneously
+            result[uid] = {**clean, "online_status": "offline"}
     return JSONResponse(content=result, headers={"Cache-Control": "private, max-age=5"})
 
 # ── Admin Stats ───────────────────────────────────────────
@@ -2143,6 +2449,51 @@ def admin_e2e_report(cu: dict = Depends(get_current_user)):
         ),
     }
 
+# ── Admin: Impersonate user ───────────────────────────────
+@app.post("/admin/impersonate/{user_id}")
+def admin_impersonate(user_id: int, cu: dict = Depends(get_current_user)):
+    """Admin-only: generate a short-lived JWT to log in as any user."""
+    if cu.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    target = mdb_get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Short-lived token (1 hour) with a marker so it can be identified
+    token = create_jwt_token({
+        "user_id": target["id"],
+        "username": target["username"],
+        "email": target["email"],
+        "role": target.get("role", "user"),
+        "display_name": target.get("display_name", target["username"]),
+        "avatar_url": target.get("avatar_url", ""),
+        "impersonated_by": cu["user_id"],
+    }, days=0)  # days=0 → use 1-hour expiry below
+    from datetime import timezone
+    exp = datetime.now(timezone.utc) + timedelta(hours=1)
+    import json as _json
+    from jose import jwt as _jwt
+    secret = os.getenv("JWT_SECRET", "")
+    token = _jwt.encode(
+        {"exp": exp, "user_id": target["id"], "username": target["username"],
+         "email": target["email"], "role": target.get("role", "user"),
+         "display_name": target.get("display_name", target["username"]),
+         "avatar_url": target.get("avatar_url", ""),
+         "impersonated_by": cu["user_id"]},
+        secret, algorithm=os.getenv("JWT_ALGORITHM", "HS256")
+    )
+    return {
+        "token": token,
+        "user": {
+            "id": target["id"],
+            "username": target["username"],
+            "email": target["email"],
+            "role": target.get("role", "user"),
+            "display_name": target.get("display_name", target["username"]),
+            "avatar_url": target.get("avatar_url", ""),
+            "phone": target.get("phone", ""),
+        }
+    }
+
 # ── Messages POST ─────────────────────────────────────────
 
 @app.post("/messages")
@@ -2161,6 +2512,8 @@ async def create_message(msg: MessageRequest, cu: dict = Depends(get_current_use
         "is_read": False,
         "created_at": _now.isoformat() + "Z",
         "expires_at": _expires,
+        "encrypted_key_for_sender":   msg.encrypted_key_for_sender or None,
+        "encrypted_key_for_receiver": msg.encrypted_key_for_receiver or None,
     }
     message = db_save_message(message)
     if msg.recipient_id:
@@ -2545,7 +2898,7 @@ def delete_user(user_id: int, cu: dict = Depends(get_current_user)):
 # ── Items CRUD ────────────────────────────────────────────
 
 col_items = mdb["items"]
-col_items.create_index("id", unique=True)
+_idx(col_items, "id", unique=True)
 
 @app.post("/items")
 def create_item(item: Item, cu: dict = Depends(get_current_user)):
@@ -2908,7 +3261,14 @@ async def approve_qr_login(token: str, cu: dict = Depends(get_current_user)):
         "avatar_url": user.get("avatar_url", ""),
         "session_id": session_id,
     })
-    rec.update({"status": "approved", "approved": True, "jwt": new_jwt, "user_id": cu["user_id"]})
+    user_payload_qr = {
+        "id": user["id"], "username": user["username"],
+        "email": user["email"], "display_name": user.get("display_name", user["username"]),
+        "avatar_url": user.get("avatar_url", ""), "role": user.get("role", "user"),
+    }
+    rec.update({"status": "approved", "approved": True, "jwt": new_jwt,
+                "user_id": cu["user_id"], "session_id": session_id,
+                "user_payload": user_payload_qr})
     mdb_save_qr_token(token, {k: v for k, v in rec.items() if k != "token"})
 
     # Save linked device so it appears in the devices list and can be revoked

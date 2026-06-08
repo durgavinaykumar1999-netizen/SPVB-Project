@@ -8,6 +8,8 @@ import { useNavigate } from 'react-router-dom'
 import { silentlyRefreshGoogleTokens, syncContactsWithToken, isGmailTokenValid, storeGmailToken, requestAllGooglePermissions } from '../utils/googleTokens'
 import { wsUrl, apiUrl } from '../utils/api'
 import { getOrCreateKeyPair, encryptMessage, decryptMessage, exportKeyBackup, importKeyBackup, replaceKeyPairFromBackup, deleteStoredKeyPair } from '../utils/e2e'
+import { loadMasterKeyPair, deleteMasterKeyPair, encryptMessageForTwo, decryptMessageWithWrappedKey, importRsaPublicKey, isV2Message, setupMasterKeyAfterLogin } from '../utils/e2eV2'
+import { LOCAL_MODE, localSaveMessage, localGetConversation, localSavePubKey, localGetPubKey } from '../utils/localStore'
 import { authenticateBiometric, hasBiometricRegistered } from '../utils/biometric'
 import { RINGTONES, CALL_RINGTONES, playRingtone, getContactRingtone, setContactRingtoneLocal } from '../utils/ringtones'
 import CallScreen from '../components/CallScreen'
@@ -289,10 +291,13 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   const [syncMsg, setSyncMsg] = useState('')
 
   /* ── E2E Encryption ── */
-  const e2ePrivKeyRef = useRef(null)   // my ECDH private CryptoKey
+  const e2ePrivKeyRef = useRef(null)   // my ECDH private CryptoKey (v1 legacy)
   const e2ePubKeyJwkRef = useRef(null) // my public key JWK string (uploaded to server)
   const contactPubKeysRef = useRef({}) // { userId: jwkString } — their public keys
   const e2eReadyRef = useRef(false)    // true once key pair loaded from IndexedDB
+  // V2 RSA-OAEP master key refs
+  const v2PrivKeyRef = useRef(null)    // my RSA-OAEP private CryptoKey (for unwrapping per-message AES keys)
+  const v2PubKeyRef  = useRef(null)    // my RSA-OAEP public CryptoKey (for wrapping)
   const liveMessagesRef = useRef({})   // mirrors liveMessages for sync access in async callbacks
   const [isDecryptingMessages, setIsDecryptingMessages] = useState(false)
   const [decryptGaveUp, setDecryptGaveUp] = useState(false) // true after 20s if still encrypted
@@ -763,13 +768,31 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
         .then(async data => {
           const serverX = data?.pubkey ? (() => { try { return JSON.parse(data.pubkey).x } catch { return null } })() : null
           if (!serverX) {
+            // Server has no pubkey — upload local key
             console.warn('[E2E] No pubkey on server — uploading now')
             await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
             console.log('[E2E] Pubkey uploaded ✅')
           } else if (serverX !== localX) {
-            console.warn(`[E2E] Pubkey MISMATCH — server-x=${serverX?.slice(0,8)}… local-x=${localX?.slice(0,8)}… → re-uploading`)
-            await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
-            console.log('[E2E] Pubkey re-synced ✅')
+            // Mismatch — check if server has a backup before overwriting
+            // If backup exists, local key is WRONG (QR device with fresh key)
+            // → show restore modal instead of overwriting server's correct key
+            console.warn(`[E2E] Pubkey MISMATCH — server-x=${serverX?.slice(0,8)}… local-x=${localX?.slice(0,8)}…`)
+            try {
+              const bkRes = await fetch(apiUrl('/api/users/me/key-backup-v2'), { headers: { Authorization: `Bearer ${token}` } })
+              const bkData = bkRes.ok ? await bkRes.json() : {}
+              if (bkData.backup && bkData.backup.length > 10) {
+                // Server has a backup → local key is wrong → restore from backup
+                console.warn('[E2E] Server has backup — local key is wrong. Showing restore modal.')
+                setE2ePasswordNeeded(true)
+              } else {
+                // No backup → local is authoritative → upload it
+                await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
+                console.log('[E2E] Pubkey re-synced ✅')
+              }
+            } catch {
+              // Fallback: re-upload local key
+              await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
+            }
           } else {
             console.log(`[E2E] Server pubkey matches ✅ x=${serverX?.slice(0,8)}…`)
           }
@@ -803,20 +826,25 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   })
 
   // Decrypt all already-loaded messages that still contain raw cipher text.
-  // Uses setLiveMessages(prev => ...) per contact so it always reads LATEST state, not stale ref.
+  // Handles both V2 (RSA-OAEP wrapped key) and V1 (ECDH shared key) messages.
   const decryptAllPending = async (privKey) => {
     const key = privKey || e2ePrivKeyRef.current
-    if (!key) return
+    const v2Priv = v2PrivKeyRef.current
+    if (!key && !v2Priv) return
     const snapshot = liveMessagesRef.current
+    const myId = user?.id
 
-    // Find contacts that actually have encrypted messages
+    // Find contacts that have any encrypted messages (v1 or v2)
     const encryptedContacts = Object.entries(snapshot).filter(([, msgs]) =>
-      msgs.some(m => String(m.text || '').startsWith('__e2e__|'))
+      msgs.some(m => {
+        const t = String(m.text || '')
+        return t.startsWith('__e2e__|') || t.startsWith('__e2ev2__|') || m._encrypted
+      })
     )
     if (encryptedContacts.length === 0) return
 
     try {
-      // Fetch ALL contact public keys IN PARALLEL — eliminates sequential network bottleneck
+      // Fetch ALL contact public keys IN PARALLEL
       const pubKeyResults = await Promise.all(
         encryptedContacts.map(([contactId]) =>
           getContactPubKey(contactId).then(pub => ({ contactId, pub }))
@@ -827,12 +855,27 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
 
       // Decrypt ALL contacts IN PARALLEL
       await Promise.all(pubKeyResults.map(async ({ contactId, pub }) => {
-        if (!pub) { anyKeyMissing = true; return }
+        if (!pub && !v2Priv) { anyKeyMissing = true; return }
         const msgs = snapshot[contactId]
         const decrypted = await Promise.all(msgs.map(async m => {
-          if (!String(m.text || '').startsWith('__e2e__|')) return m
+          const txt = String(m.text || '')
+          const isEncrypted = txt.startsWith('__e2e__|') || txt.startsWith('__e2ev2__|') || m._encrypted
+          if (!isEncrypted) return m
+          // V2: message has wrapped keys — use RSA-OAEP unwrap
+          if (v2Priv && isV2Message(m._raw || m)) {
+            const raw = m._raw || m
+            const isSender  = raw.from_user_id === myId
+            const wrappedKey = isSender ? raw.encrypted_key_for_sender : raw.encrypted_key_for_receiver
+            if (!wrappedKey) return m
+            const plain = await decryptMessageWithWrappedKey(m.text, wrappedKey, v2Priv)
+            const stillCipher = String(plain || '').startsWith('__e2e') || String(plain || '').startsWith('__e2ev2')
+            return { ...m, text: plain, _encrypted: stillCipher }
+          }
+          // V1: ECDH shared key fallback
+          if (!key || !pub) return m
           const plain = await decryptMessage(m.text, key, pub)
-          return { ...m, text: plain, _encrypted: String(plain || '').startsWith('__e2e__|') }
+          const stillCipher = String(plain || '').startsWith('__e2e')
+          return { ...m, text: plain, _encrypted: stillCipher }
         }))
         setLiveMessages(prev => {
           const current = prev[contactId]
@@ -854,28 +897,113 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     } catch { /* non-fatal */ }
   }
 
-  // Restore E2E key from backup using the user's password (called from prompt UI)
+  // Load V2 RSA-OAEP master key pair from IndexedDB — with retry in case
+  // setupMasterKeyAfterLogin is still running in the background on first load
+  useEffect(() => {
+    if (!user?.id) return
+    const uid = String(user.id)
+    const tryLoad = async (attemptsLeft) => {
+      try {
+        const kp = await loadMasterKeyPair(uid)
+        if (kp) {
+          v2PrivKeyRef.current = kp.privateKey
+          v2PubKeyRef.current  = kp.publicKey
+          console.log('[E2Ev2] Master key loaded from IndexedDB ✅')
+          // Trigger decryption now that key is available
+          const privKey = e2ePrivKeyRef.current
+          setTimeout(() => decryptAllPending(privKey), 300)
+          return
+        }
+        if (attemptsLeft > 0) {
+          // Key not ready yet — setupMasterKeyAfterLogin may still be running
+          setTimeout(() => tryLoad(attemptsLeft - 1), 800)
+        } else {
+          // RSA key not in IndexedDB — check if server has a backup to restore
+          console.warn('[E2Ev2] Master key not found — checking server for backup...')
+          try {
+            const tok = localStorage.getItem('token')
+            const res = await fetch(apiUrl('/api/users/me/key-backup-v2'), {
+              headers: { Authorization: `Bearer ${tok}` }
+            })
+            if (res.ok) {
+              const { backup } = await res.json()
+              if (backup && backup.length > 10) {
+                // Server has a backup — show password modal to restore it
+                console.log('[E2Ev2] Server backup found — showing restore modal')
+                setE2ePasswordNeeded(true)
+              } else {
+                // No backup on server — first login on any device, generate fresh key
+                console.log('[E2Ev2] No server backup — generating fresh key')
+                const pw = sessionStorage.getItem('e2e_pw') || null
+                if (pw) {
+                  setupMasterKeyAfterLogin({ userId: uid, password: pw, token: tok, apiUrl })
+                    .then(kp => {
+                      if (kp) { v2PrivKeyRef.current = kp.privateKey; v2PubKeyRef.current = kp.publicKey }
+                    }).catch(() => {})
+                }
+              }
+            }
+          } catch (err) {
+            console.warn('[E2Ev2] Backup check failed:', err?.message)
+          }
+        }
+      } catch (err) {
+        console.warn('[E2Ev2] loadMasterKeyPair error:', err?.message)
+      }
+    }
+    tryLoad(6) // retry up to 6 times = ~5 seconds total
+  }, [user?.id])
+
+  // Restore BOTH V1 ECDH + V2 RSA keys from backup using the user's password
   const restoreE2eKeyWithPassword = async (password) => {
     setE2ePasswordLoading(true)
     setE2ePasswordError('')
     try {
-      const backup = e2eBackupRef.current
-      if (!backup) throw new Error('No backup found')
-      const { privateKey, publicKeyJwk } = await replaceKeyPairFromBackup(backup, password, user.id)
-      e2ePrivKeyRef.current = privateKey
-      e2ePubKeyJwkRef.current = publicKeyJwk
-      // Clear cached contact pubkeys so they get re-fetched with correct key context
+      const tok = localStorage.getItem('token')
+      const uid = user?.id
+
+      // CRITICAL: delete any wrong fresh key from IndexedDB first
+      // so setupMasterKeyAfterLogin doesn't find it and return early
+      await deleteMasterKeyPair(String(uid))
+      await deleteStoredKeyPair(uid)
+      console.log('[E2Ev2] Cleared wrong IndexedDB keys — restoring from server backup...')
+
+      // Restore V2 RSA key from server backup using password
+      const kp = await setupMasterKeyAfterLogin({ userId: uid, password, token: tok, apiUrl })
+      if (!kp) throw new Error('Backup restore failed — check your password')
+      v2PrivKeyRef.current = kp.privateKey
+      v2PubKeyRef.current  = kp.publicKey
+      console.log('[E2Ev2] RSA key restored from password ✅')
+
+      // Restore V1 ECDH key from server backup
+      try {
+        const r = await fetch(apiUrl('/api/users/me/key-backup'), { headers: { Authorization: `Bearer ${tok}` } })
+        if (r.ok) {
+          const { backup } = await r.json()
+          if (backup) {
+            const { privateKey, publicKeyJwk } = await replaceKeyPairFromBackup(backup, password, uid)
+            e2ePrivKeyRef.current   = privateKey
+            e2ePubKeyJwkRef.current = publicKeyJwk
+            console.log('[E2E] V1 ECDH key restored ✅')
+          }
+        }
+      } catch { /* V1 restore optional */ }
+
       contactPubKeysRef.current = {}
-      localStorage.setItem(`e2e_ready_${user.id}`, '1')
+      localStorage.setItem(`e2e_ready_${uid}`, '1')
+      sessionStorage.setItem('e2e_pw', password)
       setE2ePasswordNeeded(false)
       setE2ePasswordInput('')
       e2eBackupRef.current = null
-      sessionStorage.setItem('e2e_pw', password)
-      setTimeout(() => decryptAllPending(privateKey), 0)
-      setTimeout(() => decryptAllPending(privateKey), 1500)
-      setTimeout(() => decryptAllPending(privateKey), 4000)
-      setTimeout(() => decryptAllPending(privateKey), 8000)
-    } catch {
+
+      // Trigger decryption with both keys now available
+      const v1Key = e2ePrivKeyRef.current
+      setTimeout(() => decryptAllPending(v1Key), 0)
+      setTimeout(() => decryptAllPending(v1Key), 1500)
+      setTimeout(() => decryptAllPending(v1Key), 4000)
+      setTimeout(() => decryptAllPending(v1Key), 8000)
+    } catch (err) {
+      console.warn('[E2Ev2] Restore failed:', err?.message)
       setE2ePasswordError('Incorrect password. Please try again.')
     }
     setE2ePasswordLoading(false)
@@ -1142,7 +1270,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       const cached = localStorage.getItem(`pubkey_${cid}`)
       if (cached) { contactPubKeysRef.current[cid] = cached; return cached }
     } catch {}
-    // 3. Fetch from server — retry once if empty (contact may not have uploaded key yet)
+    // 3. Fetch from server — V1 ECDH key only
     try {
       const token = localStorage.getItem('token')
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -1155,7 +1283,32 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           try { localStorage.setItem(`pubkey_${cid}`, pubkey) } catch {}
           return pubkey
         }
-        // pubkey empty — contact hasn't uploaded key yet, retry once
+      }
+    } catch {}
+    return null
+  }
+
+  // Fetch V2 RSA-OAEP public key for a contact (used for encrypting new messages)
+  const getContactPubKeyV2 = async (contactId) => {
+    const cid = String(contactId)
+    const cacheKey = `pubkey_v2_${cid}`
+    if (contactPubKeysRef.current[cacheKey]) return contactPubKeysRef.current[cacheKey]
+    try {
+      const cached = localStorage.getItem(cacheKey)
+      if (cached) { contactPubKeysRef.current[cacheKey] = cached; return cached }
+    } catch {}
+    try {
+      const token = localStorage.getItem('token')
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2000))
+        const res = await fetch(apiUrl(`/api/users/${cid}/pubkey_v2`), { headers: { Authorization: `Bearer ${token}` } })
+        if (!res.ok) break
+        const { pubkey } = await res.json()
+        if (pubkey) {
+          contactPubKeysRef.current[cacheKey] = pubkey
+          try { localStorage.setItem(cacheKey, pubkey) } catch {}
+          return pubkey
+        }
       }
     } catch {}
     return null
@@ -1687,7 +1840,8 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       const ts = m.created_at?.endsWith('Z') ? m.created_at : m.created_at + 'Z'
       return {
         id: m.id, text: m.content, // text may be encrypted; decrypted below
-        _encrypted: String(m.content || '').startsWith('__e2e__|'),
+        _encrypted: String(m.content || '').startsWith('__e2e__|') || String(m.content || '').startsWith('__e2ev2__|'),
+        _raw: m,  // keep original server message for V2 wrapped key access
         created_at: ts,
         media_url: m.media_url || null, media_type: m.media_type || null, fileName: m.file_name || null,
         replyTo: m.reply_to || null,
@@ -1716,11 +1870,25 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
         setTimeout(() => decryptAllPending(key), 3000)
         return msgs
       }
+      const v2Priv = v2PrivKeyRef.current
+      const myId = user?.id
       return Promise.all(msgs.map(async (m) => {
-        const needsDecrypt = m._encrypted || String(m.text || '').startsWith('__e2e__|')
+        const txt = String(m.text || '')
+        const needsDecrypt = m._encrypted || txt.startsWith('__e2e__|') || txt.startsWith('__e2ev2__|')
         if (!needsDecrypt) return m
+        // V2: RSA-OAEP wrapped key
+        if (v2Priv && isV2Message(m._raw || m)) {
+          const raw = m._raw || m
+          const isSender = raw.from_user_id === myId
+          const wrappedKey = isSender ? raw.encrypted_key_for_sender : raw.encrypted_key_for_receiver
+          if (!wrappedKey) return m
+          const plain = await decryptMessageWithWrappedKey(m.text, wrappedKey, v2Priv)
+          const stillCipher = String(plain || '').startsWith('__e2e')
+          return { ...m, text: plain, _encrypted: stillCipher }
+        }
+        // V1: ECDH
         const plain = await decryptMessage(m.text, key, theirPub)
-        const stillCipher = String(plain || '').startsWith('__e2e__|')
+        const stillCipher = String(plain || '').startsWith('__e2e')
         return { ...m, text: plain, _encrypted: stillCipher }
       }))
     }
@@ -2258,18 +2426,43 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     setSmartRepliesLoading(false)
   }, [])
 
-  // Shared helper: encrypt plaintext for a recipient — always returns encrypted content
+  // Shared helper: encrypt plaintext for a recipient.
+  // Uses V2 (RSA-OAEP hybrid) when both parties have RSA master keys.
+  // Falls back to V1 (ECDH) for contacts who haven't upgraded yet.
   const encryptForRecipient = async (plaintext, recipientId) => {
     await waitForE2eKey()
+
+    // ── V2 path: RSA-OAEP hybrid encryption ──────────────────────────────
+    const myV2Priv = v2PrivKeyRef.current
+    const myV2Pub  = v2PubKeyRef.current
+    if (myV2Priv && myV2Pub) {
+      // Use V2 RSA pubkey for sending — NOT the V1 ECDH pubkey
+      const theirPubJwk = LOCAL_MODE
+        ? await localGetPubKey(recipientId)
+        : await getContactPubKeyV2(recipientId)
+      if (theirPubJwk) {
+        const theirRsaPub = await importRsaPublicKey(theirPubJwk)
+        if (theirRsaPub) {
+          try {
+            const result = await encryptMessageForTwo(plaintext, myV2Pub, theirRsaPub)
+            return { ...result, encrypted: true }
+          } catch (err) {
+            console.warn('[E2Ev2] encryptMessageForTwo failed:', err?.message)
+          }
+        }
+      }
+    }
+
+    // ── V1 fallback: ECDH shared key (legacy) ────────────────────────────
     const key = e2ePrivKeyRef.current
-    if (!key) return { content: plaintext, encrypted: false } // keys not available (offline/error)
+    if (!key) return { content: plaintext, encrypted: false }
     const theirPub = await getContactPubKey(recipientId)
-    if (!theirPub) return { content: plaintext, encrypted: false } // contact has no key yet
+    if (!theirPub) return { content: plaintext, encrypted: false }
     try {
       const content = await encryptMessage(plaintext, key, theirPub)
       return { content, encrypted: true }
     } catch {
-      return { content: plaintext, encrypted: false } // encryption failed — send plain rather than lose msg
+      return { content: plaintext, encrypted: false }
     }
   }
 
@@ -2334,25 +2527,57 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     setReplyTo(null)
     const localId = Date.now()
     // Show plain text locally, send encrypted to server
-    const optimistic = { id: localId, text, created_at: new Date().toISOString(), sent: true, time: nowTime(), read: false, pending: true, from_user_id: myId, replyTo: replySnap }
+    const optimistic = { id: localId, text, created_at: new Date().toISOString(), sent: true, time: nowTime(), read: false, pending: true, from_user_id: myId, replyTo: replySnap, _raw: { from_user_id: myId } }
     setLiveMessages(prev => ({ ...prev, [activeId]: [...(prev[activeId] || []), optimistic] }))
     setRecentConversations(prev => ({ ...prev, [activeId]: { lastMsg: text, time: nowTime(), fromMe: true } }))
     try {
-      const { content: encryptedContent, encrypted: isEncrypted } = await encryptForRecipient(text, activeId)
-      // preview: plain-text snippet sent to backend for push notification body only.
-      // The stored message remains encrypted; preview is used solely for the push payload.
+      const encResult = await encryptForRecipient(text, activeId)
+      const { content: encryptedContent, encrypted: isEncrypted,
+              encrypted_key_for_sender, encrypted_key_for_receiver } = encResult
       const preview = text.slice(0, 60)
-      const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content: encryptedContent, room, recipient_id: activeId, reply_to: replySnap, encrypted: isEncrypted, preview }) })
-      if (res.ok) {
-        const serverMsg = await res.json()
+      const msgBody = {
+        content: encryptedContent,
+        room,
+        recipient_id: activeId,
+        reply_to: replySnap,
+        encrypted: isEncrypted,
+        preview,
+        ...(encrypted_key_for_sender   && { encrypted_key_for_sender }),
+        ...(encrypted_key_for_receiver && { encrypted_key_for_receiver }),
+      }
+
+      if (LOCAL_MODE) {
+        // Store locally — no server call
+        const saved = await localSaveMessage({ ...msgBody, from_user_id: myId, sender: user?.username || '', created_at: new Date().toISOString() })
         setLiveMessages(prev => ({
           ...prev,
           [activeId]: (prev[activeId] || []).map(m =>
-            m.id === localId
-              ? { ...m, id: serverMsg.id, pending: false, time: new Date((serverMsg.created_at?.endsWith('Z') ? serverMsg.created_at : serverMsg.created_at + 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
-              : m
+            m.id === localId ? { ...m, id: saved.id, pending: false } : m
           )
         }))
+      } else {
+        const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(msgBody) })
+        if (res.ok) {
+          const serverMsg = await res.json()
+          // Attach encrypted key fields to _raw so decryption can find them
+          const rawWithKeys = {
+            ...serverMsg,
+            encrypted_key_for_sender,
+            encrypted_key_for_receiver,
+            from_user_id: myId,
+          }
+          setLiveMessages(prev => ({
+            ...prev,
+            [activeId]: (prev[activeId] || []).map(m =>
+              m.id === localId
+                ? { ...m, id: serverMsg.id, pending: false,
+                    _raw: rawWithKeys,
+                    _encrypted: isEncrypted,
+                    time: new Date((serverMsg.created_at?.endsWith('Z') ? serverMsg.created_at : serverMsg.created_at + 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+                : m
+            )
+          }))
+        }
       }
     } catch (_) {}
   }, [input, activeId, user?.id, replyTo, fetchSmartReplies])
@@ -3767,14 +3992,24 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
               replyTo: msg.reply_to || null,
               sent: isSelfMsg, time: timeStr,
               read: isActiveChat, status: msg.status || 'sent', pending: false, from_user_id: fromId,
-              _encrypted: String(plainText || '').startsWith('__e2e__|'),
+              _raw: msg,
+              _encrypted: String(plainText || '').startsWith('__e2e__|') || String(plainText || '').startsWith('__e2ev2__|'),
             }],
           }
         })
         if (!isSelfMsg) setRecentConversations(prev => ({ ...prev, [fromId]: { lastMsg: plainText, time: timeStr, fromMe: false } }))
       }
-      if (rawContent.startsWith('__e2e__|')) {
+      if (rawContent.startsWith('__e2e__|') || rawContent.startsWith('__e2ev2__|')) {
         waitForE2eKey().then(async () => {
+          // V2: RSA-OAEP wrapped key present — use it directly
+          const v2Priv = v2PrivKeyRef.current
+          if (v2Priv && isV2Message(msg)) {
+            const wrappedKey = msg.encrypted_key_for_receiver
+            const plain = await decryptMessageWithWrappedKey(rawContent, wrappedKey, v2Priv)
+            addMsg(plain)
+            return
+          }
+          // V1: ECDH shared key fallback
           const key = e2ePrivKeyRef.current
           if (!key) { addMsg(rawContent); return }
           const theirPub = await getContactPubKey(fromId)
@@ -3995,6 +4230,16 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       }))
       if (data.status === 'online') {
         lastSeenRef.current[uid] = new Date().toISOString()
+        // Contact just came online — clear both v1 and v2 pubkey caches
+        delete contactPubKeysRef.current[uid]
+        delete contactPubKeysRef.current[`pubkey_v2_${uid}`]
+        try { localStorage.removeItem(`pubkey_${uid}`) } catch {}
+        try { localStorage.removeItem(`pubkey_v2_${uid}`) } catch {}
+        const privKey = e2ePrivKeyRef.current
+        if (privKey || v2PrivKeyRef.current) {
+          setTimeout(() => decryptAllPending(privKey), 500)
+          setTimeout(() => decryptAllPending(privKey), 2500)
+        }
       }
     }
 
@@ -5330,17 +5575,15 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                       </div>
                     )}
                     {m.text && !parseSpecialContent(m.text) && !String(m.text).startsWith('__poll__|') && (
-                      (String(m.text).startsWith('__e2e__|') || String(m.text).startsWith('e2e__|'))
+                      (String(m.text).startsWith('__e2e__|') || String(m.text).startsWith('__e2ev2__|') || String(m.text).startsWith('e2e__|'))
                         ? (
                           decryptGaveUp
                             ? (
-                              // Key or contact pubkey unavailable — show clean lock, no spinner
                               <div className="wa-bubble-text" style={{ color: '#8696a0', fontSize: 12, fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: 5 }}>
                                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                                <span>Encrypted</span>
+                                <span>Message from before encryption upgrade</span>
                               </div>
                             ) : (
-                              // Still attempting — show spinner (auto-resolves within 20s)
                               <div className="wa-bubble-text" style={{ color: '#8696a0', fontSize: 12, fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: 6 }}>
                                 <div style={{ width: 11, height: 11, border: '2px solid #8696a066', borderTopColor: '#8696a0', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
                                 <span>Decrypting…</span>
@@ -7812,6 +8055,39 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                 )
               })()}
 
+              {/* Encryption sub-page */}
+              {settingsPage === 'privacy' && (
+                <div style={{ marginTop: 0 }}>
+                  <div style={{ margin: '16px 16px 6px', color: dm.subtext, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px' }}>End-to-End Encryption</div>
+                  <div style={{ background: dm.panel }}>
+                    <div style={{ padding: '16px 20px', borderBottom: `1px solid ${dm.border}`, display: 'flex', alignItems: 'center', gap: 14 }}>
+                      <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(37,211,102,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#25d366" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ color: dm.text, fontSize: 14, fontWeight: 600 }}>Messages are end-to-end encrypted</div>
+                        <div style={{ color: dm.subtext, fontSize: 12, marginTop: 2 }}>
+                          {v2PrivKeyRef.current ? '🔑 RSA master key loaded ✅' : '⚠️ RSA key not loaded — messages may show as encrypted'}
+                        </div>
+                      </div>
+                    </div>
+                    <div
+                      onClick={() => setE2ePasswordNeeded(true)}
+                      style={{ padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }}
+                    >
+                      <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(99,102,241,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ color: dm.text, fontSize: 14, fontWeight: 600 }}>Restore Encryption Keys</div>
+                        <div style={{ color: dm.subtext, fontSize: 12, marginTop: 2 }}>Enter password to restore keys on this device</div>
+                      </div>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={dm.subtext} strokeWidth="2"><path d="m9 18 6-6-6-6"/></svg>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Help sub-page */}
               {settingsPage === 'help' && (
                 <div style={{ padding: '8px 0' }}>
@@ -8176,6 +8452,51 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                 Create Group
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── E2E Key Restore Modal — shown after QR/new device login ── */}
+      {e2ePasswordNeeded && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <div style={{ background: '#1e293b', borderRadius: 16, padding: 32, width: '100%', maxWidth: 380, boxShadow: '0 24px 60px rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
+            <div style={{ textAlign: 'center', marginBottom: 20 }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>🔐</div>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>Restore Encryption Keys</h2>
+              <p style={{ margin: '8px 0 0', fontSize: 13, color: '#94a3b8', lineHeight: 1.5 }}>
+                Enter your password to decrypt your messages on this device.
+              </p>
+            </div>
+            <input
+              type="password"
+              placeholder="Your account password"
+              value={e2ePasswordInput}
+              onChange={e => setE2ePasswordInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !e2ePasswordLoading && restoreE2eKeyWithPassword(e2ePasswordInput)}
+              autoFocus
+              style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: `1px solid ${e2ePasswordError ? '#ef4444' : 'rgba(255,255,255,0.1)'}`, background: 'rgba(255,255,255,0.05)', color: '#f1f5f9', fontSize: 15, outline: 'none', boxSizing: 'border-box', marginBottom: 8 }}
+            />
+            {e2ePasswordError && (
+              <p style={{ margin: '0 0 12px', fontSize: 12, color: '#ef4444' }}>{e2ePasswordError}</p>
+            )}
+            <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+              <button
+                onClick={() => { setE2ePasswordNeeded(false); setE2ePasswordInput(''); setE2ePasswordError('') }}
+                style={{ flex: 1, padding: '11px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontSize: 14, fontFamily: 'inherit' }}
+              >
+                Skip
+              </button>
+              <button
+                onClick={() => restoreE2eKeyWithPassword(e2ePasswordInput)}
+                disabled={!e2ePasswordInput || e2ePasswordLoading}
+                style={{ flex: 2, padding: '11px', borderRadius: 10, border: 'none', background: e2ePasswordInput && !e2ePasswordLoading ? '#25d366' : '#334155', color: 'white', cursor: e2ePasswordInput && !e2ePasswordLoading ? 'pointer' : 'default', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', transition: 'background 0.2s' }}
+              >
+                {e2ePasswordLoading ? 'Restoring…' : 'Restore Keys'}
+              </button>
+            </div>
+            <p style={{ margin: '14px 0 0', fontSize: 11, color: '#475569', textAlign: 'center' }}>
+              Your password never leaves your device. Keys are encrypted end-to-end.
+            </p>
           </div>
         </div>
       )}

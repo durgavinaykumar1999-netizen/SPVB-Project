@@ -22,6 +22,23 @@ function App() {
   })
   const navigate = useNavigate()
 
+  // Pick up impersonation handoff from admin panel (passed via URL — same-origin so localStorage works)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const impToken = params.get('impersonate_token')
+    const impUser = params.get('impersonate_user')
+    if (impToken && impUser) {
+      try {
+        localStorage.setItem('token', impToken)
+        localStorage.setItem('user', impUser)
+        localStorage.setItem('impersonating', '1')
+        setToken(impToken)
+        setUser(JSON.parse(impUser))
+      } catch {}
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
+
   const { locked, unlock, bioSupported, bioRegistered, setBioRegistered, lockReady } = useAppLock(user)
 
   const onLogin = useCallback(() => {

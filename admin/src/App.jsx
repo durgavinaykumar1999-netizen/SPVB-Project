@@ -461,9 +461,35 @@ function AdminDashboard({ user, onLogout }) {
                         <Td>{u.last_login ? fmtTime(u.last_login) : '—'}</Td>
                         <Td>{u.created_at?.slice(0, 10)}</Td>
                         <td style={{ padding: '13px 18px' }}>
-                          <div style={{ display: 'flex', gap: 6 }}>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                             <Btn variant="warning" onClick={() => setEditUser(u)}>Edit</Btn>
                             <Btn variant="danger" onClick={() => del(`/api/users/${u.id}`, loadData)}>Del</Btn>
+                            <button
+                              title="Impersonate — login as this user"
+                              onClick={async () => {
+                                if (!window.confirm(`Login as "${u.username}"? This opens their dashboard in a new tab.`)) return
+                                try {
+                                  const res = await apiFetch(`/api/admin/impersonate/${u.id}`, { method: 'POST' })
+                                  const data = await res.json()
+                                  if (!res.ok) throw new Error(data.detail || 'Failed')
+                                  const frontendUrl = window.location.origin.replace(':1403', ':1402').replace('/admin', '')
+                                  const url = new URL(frontendUrl)
+                                  url.port = '1402'
+                                  const params = new URLSearchParams({
+                                    impersonate_token: data.token,
+                                    impersonate_user: JSON.stringify(data.user),
+                                  })
+                                  window.open(`${url.origin}/dashboard?${params.toString()}`, '_blank')
+                                } catch (e) { alert('Impersonate failed: ' + e.message) }
+                              }}
+                              style={{ background: 'rgba(42,94,108,0.15)', border: '1px solid rgba(42,94,108,0.4)', borderRadius: 7, padding: '5px 8px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.15s' }}
+                              onMouseEnter={e => e.currentTarget.style.background = 'rgba(42,94,108,0.35)'}
+                              onMouseLeave={e => e.currentTarget.style.background = 'rgba(42,94,108,0.15)'}
+                            >
+                              <svg focusable="false" aria-hidden="true" viewBox="0 0 24 24" style={{ height: 20, width: 20, color: 'rgb(42,94,108)' }}>
+                                <path fill="currentColor" d="M11 7 9.6 8.4l2.6 2.6H2v2h10.2l-2.6 2.6L11 17l5-5zm9 12h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-8v2h8z"/>
+                              </svg>
+                            </button>
                           </div>
                         </td>
                       </tr>

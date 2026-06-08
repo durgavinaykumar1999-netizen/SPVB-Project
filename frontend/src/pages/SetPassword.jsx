@@ -1,4 +1,5 @@
 import { apiUrl } from '../utils/api'
+import { setupMasterKeyAfterLogin } from '../utils/e2eV2'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -37,6 +38,11 @@ export default function SetPassword() {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Setup failed')
+      sessionStorage.setItem('e2e_pw', form.password)
+      // Setup V2 RSA-OAEP master key now that password is available (Google users)
+      const user = JSON.parse(localStorage.getItem('user') || '{}')
+      setupMasterKeyAfterLogin({ userId: user.id, password: form.password, token, apiUrl })
+        .catch(err => console.warn('[E2Ev2] setup failed on set-password:', err?.message))
       navigate('/dashboard')
     } catch (err) {
       setError(err.message)

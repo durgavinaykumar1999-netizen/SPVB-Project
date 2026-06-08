@@ -1,5 +1,10 @@
 const BACKEND = import.meta.env.VITE_BACKEND_URL || ''
 
+// Local mode: bypass server, store all data in IndexedDB (for E2E V2 testing)
+// Enable:  localStorage.setItem('spvb_local_mode', '1')
+// Disable: localStorage.removeItem('spvb_local_mode')
+export const LOCAL_MODE = localStorage.getItem('spvb_local_mode') === '1'
+
 export const apiUrl = (path) => {
   const stripped = BACKEND ? path.replace(/^\/api/, '') : path
   return `${BACKEND}${stripped}`

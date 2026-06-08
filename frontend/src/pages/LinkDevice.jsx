@@ -1,4 +1,5 @@
 import { apiUrl } from '../utils/api'
+import { setupMasterKeyAfterLogin } from '../utils/e2eV2'
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
@@ -45,6 +46,13 @@ export default function LinkDevice() {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Approval failed')
+      // Re-run key setup on approving device to ensure pubkey is current on server
+      const user = JSON.parse(localStorage.getItem('user') || '{}')
+      const pw   = sessionStorage.getItem('e2e_pw')
+      if (user.id && authToken) {
+        setupMasterKeyAfterLogin({ userId: user.id, password: pw || null, token: authToken, apiUrl })
+          .catch(err => console.warn('[E2Ev2] setup on link-device approve:', err?.message))
+      }
       setStatus('done')
       setMessage('Desktop has been linked! You can close this tab.')
     } catch (err) {
