@@ -1,5 +1,6 @@
 import { apiUrl, wsUrl } from '../utils/api'
 import { setupMasterKeyAfterLogin } from '../utils/e2eV2'
+import { setSecureToken } from '../utils/secureToken'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
@@ -69,9 +70,7 @@ function QRPanel({ onLogin }) {
           const msg = JSON.parse(ev.data)
           if (msg.type === 'qr_approved' && msg.token) {
             clearInterval(timerRef.current)
-            localStorage.setItem('token', msg.token)
-            if (msg.user) localStorage.setItem('user', JSON.stringify(msg.user))
-            if (msg.session_id) localStorage.setItem('session_id', msg.session_id)
+            setSecureToken(msg.token, msg.user, msg.session_id)
             setStatus('approved')
             // Navigate to dashboard — key restore happens there via password modal
             // Do NOT call setupMasterKeyAfterLogin here without a password:
@@ -228,10 +227,8 @@ function LoginForm({ onLogin }) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(parseError(data.detail) || 'Google sign-in failed')
       if (!data.token) throw new Error('Sign-in failed: no token received')
-      localStorage.setItem('token', data.token)
-      localStorage.setItem('user', JSON.stringify(data.user || {}))
+      setSecureToken(data.token, data.user, data.session_id)
       localStorage.setItem('google_auth', 'true')
-      if (data.session_id) localStorage.setItem('session_id', data.session_id)
       if (data.is_new_user || data.needs_setup) {
         await new Promise(resolve => { requestAllGooglePermissions(GOOGLE_CLIENT_ID, resolve) })
         onLogin?.(); navigate('/set-password')
@@ -258,9 +255,7 @@ function LoginForm({ onLogin }) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(parseError(data.detail) || 'Login failed')
       if (!data.token) throw new Error('Login failed: no token received')
-      localStorage.setItem('token', data.token)
-      localStorage.setItem('user', JSON.stringify(data.user || {}))
-      if (data.session_id) localStorage.setItem('session_id', data.session_id)
+      setSecureToken(data.token, data.user, data.session_id)
       sessionStorage.setItem('e2e_pw', form.password)
       // Setup V2 RSA-OAEP master key — AWAIT before navigating so key is in IndexedDB when Dashboard loads
       try {

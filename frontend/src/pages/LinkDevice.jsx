@@ -1,5 +1,6 @@
 import { apiUrl } from '../utils/api'
 import { setupMasterKeyAfterLogin } from '../utils/e2eV2'
+import { getSecureToken } from '../utils/secureToken'
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
@@ -10,11 +11,11 @@ export default function LinkDevice() {
   const [status, setStatus]   = useState('loading') // loading | confirm | approving | done | error | noauth
   const [message, setMessage] = useState('')
   const [tokenInfo, setTokenInfo] = useState(null) // {browser, created_at, expires_at}
-  const [authToken, setAuthToken] = useState(() => localStorage.getItem('token'))
+  const [authToken, setAuthToken] = useState(() => getSecureToken())
 
   useEffect(() => {
     const handleStorageChange = () => {
-      setAuthToken(localStorage.getItem('token'))
+      setAuthToken(getSecureToken())
     }
     window.addEventListener('storage', handleStorageChange)
     return () => window.removeEventListener('storage', handleStorageChange)
@@ -22,15 +23,41 @@ export default function LinkDevice() {
 
   useEffect(() => {
     if (!authToken) { setStatus('noauth'); return }
-    if (!token) { setStatus('confirm'); return }
-    fetch(apiUrl(`/api/auth/qr/${token}/info`))
-      .then(r => r.json())
+    if (!token) { setStatus('error'); setMessage('Invalid QR link - no token found.'); return }
+
+    let isMounted = true
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10s timeout
+
+    fetch(apiUrl(`/api/auth/qr/${token}/info`), { signal: controller.signal })
+      .then(r => {
+        if (!r.ok) throw new Error(r.statusText || 'Failed to get QR info')
+        return r.json()
+      })
       .then(data => {
-        if (data.status === 'approved') { setStatus('error'); setMessage('This QR code has already been used.'); return }
+        if (!isMounted) return
+        if (data.status === 'approved') {
+          setStatus('error')
+          setMessage('This QR code has already been used.')
+          return
+        }
         setTokenInfo(data)
         setStatus('confirm')
       })
-      .catch(() => setStatus('confirm'))
+      .catch(err => {
+        if (!isMounted) return
+        console.error('[LinkDevice] QR info fetch failed:', err?.message)
+        // Show error but allow manual approval if needed
+        setStatus('error')
+        setMessage('Could not load device info. Please try again.')
+      })
+      .finally(() => clearTimeout(timeoutId))
+
+    return () => {
+      isMounted = false
+      controller.abort()
+      clearTimeout(timeoutId)
+    }
   }, [authToken, token])
 
   if (!token) {
@@ -45,39 +72,82 @@ export default function LinkDevice() {
   }
 
   const approve = async () => {
+    if (!authToken || !token) {
+      setStatus('error')
+      setMessage('Missing authentication. Please sign in first.')
+      return
+    }
+
     setStatus('approving')
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
+
     try {
-      const res  = await fetch(apiUrl(`/api/auth/qr/${token}/approve`), {
+      const res = await fetch(apiUrl(`/api/auth/qr/${token}/approve`), {
         method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
       })
+
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Approval failed')
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || `Approval failed (${res.status})`)
+      }
+
       // Re-run key setup on approving device to ensure pubkey is current on server
       const user = JSON.parse(localStorage.getItem('user') || '{}')
-      const pw   = sessionStorage.getItem('e2e_pw')
+      const pw = sessionStorage.getItem('e2e_pw')
       if (user.id && authToken) {
         setupMasterKeyAfterLogin({ userId: user.id, password: pw || null, token: authToken, apiUrl })
           .catch(err => console.warn('[E2Ev2] setup on link-device approve:', err?.message))
       }
+
       setStatus('done')
-      setMessage('Desktop has been linked! You can close this tab.')
+      setMessage('✅ Desktop has been linked! You can close this tab.')
     } catch (err) {
+      console.error('[LinkDevice] Approval failed:', err?.message)
       setStatus('error')
-      setMessage(err.message)
+      setMessage(err?.message || 'Failed to approve. Please try again.')
+    } finally {
+      clearTimeout(timeoutId)
     }
   }
 
   const reject = async () => {
+    if (!authToken || !token) {
+      setStatus('error')
+      setMessage('Missing authentication.')
+      return
+    }
+
     setStatus('approving')
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10s timeout
+
     try {
-      await fetch(apiUrl(`/api/auth/qr/${token}/reject`), {
+      const res = await fetch(apiUrl(`/api/auth/qr/${token}/reject`), {
         method: 'POST',
         headers: { Authorization: `Bearer ${authToken}` },
+        signal: controller.signal,
       })
-    } catch {}
-    setStatus('done')
-    setMessage('Login request rejected.')
+
+      if (!res.ok) {
+        throw new Error(`Rejection failed (${res.status})`)
+      }
+
+      setStatus('done')
+      setMessage('❌ Login request rejected.')
+    } catch (err) {
+      console.error('[LinkDevice] Rejection failed:', err?.message)
+      // Still show done even if rejection API fails
+      setStatus('done')
+      setMessage('Login request denied.')
+    } finally {
+      clearTimeout(timeoutId)
+    }
   }
 
   if (status === 'noauth') {
