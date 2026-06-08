@@ -10,6 +10,7 @@ import ForgotPassword from './pages/ForgotPassword'
 import LinkDevice from './pages/LinkDevice'
 import AppLock, { useAppLock } from './components/AppLock'
 import { registerBiometric, isBiometricSupported } from './utils/biometric'
+import { apiUrl } from './utils/api'
 
 function App() {
   const [splashDone, setSplashDone] = useState(false)
@@ -20,6 +21,7 @@ function App() {
   const [user, setUser] = useState(() => {
     try { return JSON.parse(localStorage.getItem('user') || 'null') } catch { return null }
   })
+  const [backupCheckDone, setBackupCheckDone] = useState(false)
   const navigate = useNavigate()
 
   // Pick up impersonation handoff from admin panel (passed via URL — same-origin so localStorage works)
@@ -71,6 +73,30 @@ function App() {
     return () => window.removeEventListener('storage', sync)
   }, [])
 
+  // Check if backup password verification is needed on login
+  useEffect(() => {
+    const checkBackup = async () => {
+      if (!token || !user?.id) {
+        setBackupCheckDone(true)
+        return
+      }
+
+      try {
+        // Check if server has a backup that needs to be restored
+        const res = await fetch(apiUrl('/api/users/me/key-backup-v2'), {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const data = await res.json().catch(() => ({}))
+        // If backup exists, Dashboard will show password modal - no need for loading screen here
+        setBackupCheckDone(true)
+      } catch {
+        setBackupCheckDone(true)
+      }
+    }
+
+    checkBackup()
+  }, [token, user?.id])
+
   const handleRegisterBiometric = async () => {
     if (!user) return
     try {
@@ -82,6 +108,25 @@ function App() {
   }
 
   if (!splashDone) return <SplashScreen onDone={() => setSplashDone(true)} />
+
+  // Show loading screen while checking backup password requirement
+  if (token && !backupCheckDone) {
+    return (
+      <div style={{
+        position: 'fixed', inset: 0,
+        background: '#050d10',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        zIndex: 9999,
+      }}>
+        <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
+          <div style={{ width: 50, height: 50, border: '3px solid #00a884', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+          <div style={{ color: '#8696a0', fontSize: 14 }}>Verifying backup...</div>
+        </div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
 
   return (
     <>

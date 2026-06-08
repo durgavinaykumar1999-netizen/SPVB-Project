@@ -94,6 +94,14 @@ function QRPanel({ onLogin }) {
     }
   }, [generate])
 
+  // Navigate to dashboard after QR approval
+  useEffect(() => {
+    if (status === 'approved') {
+      const timer = setTimeout(() => navigate('/dashboard'), 1500)
+      return () => clearTimeout(timer)
+    }
+  }, [status, navigate])
+
   const mins = String(Math.floor(secondsLeft / 60)).padStart(2, '0')
   const secs = String(secondsLeft % 60).padStart(2, '0')
 
@@ -228,7 +236,10 @@ function LoginForm({ onLogin }) {
         await new Promise(resolve => { requestAllGooglePermissions(GOOGLE_CLIENT_ID, resolve) })
         onLogin?.(); navigate('/set-password')
       } else {
-        silentlyRefreshGoogleTokens(GOOGLE_CLIENT_ID); onLogin?.()
+        silentlyRefreshGoogleTokens(GOOGLE_CLIENT_ID)
+        // For Google users, E2E setup will be handled by Dashboard with password modal
+        // Don't call setupMasterKeyAfterLogin here since we don't have a password
+        onLogin?.(); navigate('/dashboard')
       }
     } catch (err) { setError(err.message) }
     finally { setGoogleLoading(false) }
