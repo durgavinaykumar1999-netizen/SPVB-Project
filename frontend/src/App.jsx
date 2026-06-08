@@ -103,7 +103,7 @@ function App() {
         <Route path="/set-password"    element={token ? <SetPassword /> : <Navigate to="/login" replace />} />
         <Route path="/set-name"        element={token ? <SetName /> : <Navigate to="/login" replace />} />
         <Route path="/dashboard"       element={token ? <Dashboard onLogout={onLogout} onLogin={onLogin} bioRegistered={bioRegistered} onRegisterBiometric={handleRegisterBiometric} bioSupported={bioSupported} /> : <Navigate to="/login" replace />} />
-        <Route path="/link-device"     element={<LinkDevice onLogin={onLogin} />} />
+        <Route path="/link-device"     element={<LinkDevice onLogin={onLogin} bioRegistered={bioRegistered} />} />
         <Route path="/"                element={<Navigate to={token ? '/dashboard' : '/login'} replace />} />
       </Routes>
     </>

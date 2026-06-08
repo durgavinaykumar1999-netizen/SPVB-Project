@@ -10,8 +10,15 @@ export default function LinkDevice() {
   const [status, setStatus]   = useState('loading') // loading | confirm | approving | done | error | noauth
   const [message, setMessage] = useState('')
   const [tokenInfo, setTokenInfo] = useState(null) // {browser, created_at, expires_at}
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem('token'))
 
-  const authToken = localStorage.getItem('token')
+  useEffect(() => {
+    const handleStorageChange = () => {
+      setAuthToken(localStorage.getItem('token'))
+    }
+    window.addEventListener('storage', handleStorageChange)
+    return () => window.removeEventListener('storage', handleStorageChange)
+  }, [])
 
   useEffect(() => {
     if (!authToken) { setStatus('noauth'); return }
