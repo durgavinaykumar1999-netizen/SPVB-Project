@@ -8523,6 +8523,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       )}
 
       {/* ── E2E Key Restore Modal — shown after QR/new device login or for Google users ── */}
+      {/* COMMENTED OUT: Encryption Password Modal - Silent restore in background
       {e2ePasswordNeeded && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
           <div style={{ background: '#1e293b', borderRadius: 16, padding: 32, width: '100%', maxWidth: 380, boxShadow: '0 24px 60px rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
@@ -8568,6 +8569,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           </div>
         </div>
       )}
+      */}
     </div>
   )
 }
