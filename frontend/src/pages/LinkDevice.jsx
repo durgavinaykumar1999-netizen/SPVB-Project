@@ -22,31 +22,56 @@ export default function LinkDevice() {
   }, [])
 
   useEffect(() => {
-    if (!authToken) { setStatus('noauth'); return }
-    if (!token) { setStatus('error'); setMessage('Invalid QR link - no token found.'); return }
+    console.log('[LinkDevice] Component mounted. authToken:', authToken ? 'yes' : 'no', 'token:', token ? 'yes' : 'no')
 
+    if (!authToken) {
+      console.log('[LinkDevice] ❌ No auth token - showing "Sign in first"')
+      setStatus('noauth')
+      return
+    }
+
+    if (!token) {
+      console.log('[LinkDevice] ❌ No QR token in URL')
+      setStatus('error')
+      setMessage('Invalid QR link - no token found.')
+      return
+    }
+
+    console.log('[LinkDevice] ✅ Auth token and QR token present. Fetching QR info...')
     let isMounted = true
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10s timeout
+    const timeoutId = setTimeout(() => {
+      console.log('[LinkDevice] ⏱️ Request timeout - aborting')
+      controller.abort()
+    }, 10000) // 10s timeout
 
     fetch(apiUrl(`/api/auth/qr/${token}/info`), { signal: controller.signal })
       .then(r => {
+        console.log('[LinkDevice] API response status:', r.status)
         if (!r.ok) throw new Error(r.statusText || 'Failed to get QR info')
         return r.json()
       })
       .then(data => {
-        if (!isMounted) return
+        console.log('[LinkDevice] QR info received:', data)
+        if (!isMounted) {
+          console.log('[LinkDevice] Component unmounted, ignoring response')
+          return
+        }
+
         if (data.status === 'approved') {
+          console.log('[LinkDevice] ⚠️ QR already approved/used')
           setStatus('error')
           setMessage('This QR code has already been used.')
           return
         }
+
+        console.log('[LinkDevice] ✅ QR info valid, showing confirmation screen')
         setTokenInfo(data)
         setStatus('confirm')
       })
       .catch(err => {
         if (!isMounted) return
-        console.error('[LinkDevice] QR info fetch failed:', err?.message)
+        console.error('[LinkDevice] ❌ QR info fetch failed:', err?.message)
         // Show error but allow manual approval if needed
         setStatus('error')
         setMessage('Could not load device info. Please try again.')
