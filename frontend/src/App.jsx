@@ -95,26 +95,38 @@ function App() {
   // Check if backup password verification is needed on login
   useEffect(() => {
     const checkBackup = async () => {
-      if (!token || !user?.id) {
+      if (!token) {
+        console.log('[App] No token, skipping backup check')
         setBackupCheckDone(true)
         return
       }
 
+      console.log('[App] Token present, checking backup...')
+
       try {
         // Check if server has a backup that needs to be restored
+        // Use token-based auth - works even if user data wasn't in the message
         const res = await fetch(apiUrl('/api/users/me/key-backup-v2'), {
           headers: { Authorization: `Bearer ${token}` },
         })
+        if (!res.ok) {
+          console.log('[App] Backup check failed, but proceeding:', res.status)
+          setBackupCheckDone(true)
+          return
+        }
+
         const data = await res.json().catch(() => ({}))
+        console.log('[App] Backup check complete:', data)
         // If backup exists, Dashboard will show password modal - no need for loading screen here
         setBackupCheckDone(true)
-      } catch {
+      } catch (err) {
+        console.log('[App] Backup check error (not fatal):', err?.message)
         setBackupCheckDone(true)
       }
     }
 
     checkBackup()
-  }, [token, user?.id])
+  }, [token])
 
   const handleRegisterBiometric = async () => {
     if (!user) return
