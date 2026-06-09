@@ -305,6 +305,8 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   const [e2ePasswordInput, setE2ePasswordInput] = useState('')
   const [e2ePasswordError, setE2ePasswordError] = useState('')
   const [e2ePasswordLoading, setE2ePasswordLoading] = useState(false)
+  const [passwordValidated, setPasswordValidated] = useState(false) // Track if password was validated (show checkmark)
+  const [decryptingMessages, setDecryptingMessages] = useState(false) // Track if messages are being decrypted
   const e2eBackupRef = useRef(null) // cached backup blob when password prompt is shown
 
   /* ── Typing indicators ── */
@@ -1072,8 +1074,31 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       localStorage.setItem(`e2e_ready_${uid}`, '1')
       sessionStorage.setItem('e2e_pw', password)
       sessionStorage.setItem('e2e_password_validation_shown', '1') // Mark validation complete - don't show modal again
-      setE2ePasswordNeeded(false)
-      setE2ePasswordInput('')
+
+      // Show checkmark for 1 second, then start message decryption
+      setPasswordValidated(true)
+      console.log('[PASSWORD] ✅ Password validated - showing checkmark')
+
+      setTimeout(() => {
+        setE2ePasswordNeeded(false)
+        setE2ePasswordInput('')
+        setDecryptingMessages(true) // Start full screen loading
+        console.log('[DECRYPT] Starting message decryption...')
+
+        // Trigger decryption immediately
+        const v1Key = e2ePrivKeyRef.current
+        if (v1Key) {
+          setTimeout(() => {
+            decryptAllPending(v1Key)
+            setTimeout(() => {
+              setDecryptingMessages(false) // Decryption complete
+              setPasswordValidated(false)
+              console.log('[DECRYPT] ✅ Messages decrypted - showing dashboard')
+            }, 2000)
+          }, 500)
+        }
+      }, 1500) // Show checkmark for 1.5 seconds
+
       e2eBackupRef.current = null
 
       // Trigger decryption with both keys now available
@@ -8542,39 +8567,77 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
           <div style={{ background: '#1e293b', borderRadius: 16, padding: 32, width: '100%', maxWidth: 380, boxShadow: '0 24px 60px rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
             <div style={{ textAlign: 'center', marginBottom: 20 }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>🔐</div>
-              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>Verify Password</h2>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>
+                {passwordValidated ? '✅' : '🔐'}
+              </div>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>
+                {passwordValidated ? 'Password Verified!' : 'Verify Password'}
+              </h2>
               <p style={{ margin: '8px 0 0', fontSize: 13, color: '#94a3b8', lineHeight: 1.5 }}>
-                Enter your password to unlock messages on this device.
+                {passwordValidated ? 'Decrypting your messages...' : 'Enter your password to unlock messages on this device.'}
               </p>
             </div>
-            <input
-              type="password"
-              placeholder="Your account password"
-              value={e2ePasswordInput}
-              onChange={e => setE2ePasswordInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !e2ePasswordLoading && restoreE2eKeyWithPassword(e2ePasswordInput)}
-              autoFocus
-              style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: `1px solid ${e2ePasswordError ? '#ef4444' : 'rgba(255,255,255,0.1)'}`, background: 'rgba(255,255,255,0.05)', color: '#f1f5f9', fontSize: 15, outline: 'none', boxSizing: 'border-box', marginBottom: 8 }}
-            />
-            {e2ePasswordError && (
-              <p style={{ margin: '0 0 12px', fontSize: 12, color: '#ef4444' }}>{e2ePasswordError}</p>
+
+            {!passwordValidated && (
+              <>
+                <input
+                  type="password"
+                  placeholder="Your account password"
+                  value={e2ePasswordInput}
+                  onChange={e => setE2ePasswordInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !e2ePasswordLoading && restoreE2eKeyWithPassword(e2ePasswordInput)}
+                  autoFocus
+                  style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: `1px solid ${e2ePasswordError ? '#ef4444' : 'rgba(255,255,255,0.1)'}`, background: 'rgba(255,255,255,0.05)', color: '#f1f5f9', fontSize: 15, outline: 'none', boxSizing: 'border-box', marginBottom: 8 }}
+                />
+                {e2ePasswordError && (
+                  <p style={{ margin: '0 0 12px', fontSize: 12, color: '#ef4444' }}>{e2ePasswordError}</p>
+                )}
+                <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+                  <button
+                    onClick={() => restoreE2eKeyWithPassword(e2ePasswordInput)}
+                    disabled={!e2ePasswordInput || e2ePasswordLoading}
+                    style={{ flex: 1, padding: '11px', borderRadius: 10, border: 'none', background: e2ePasswordInput && !e2ePasswordLoading ? '#25d366' : '#334155', color: 'white', cursor: e2ePasswordInput && !e2ePasswordLoading ? 'pointer' : 'default', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', transition: 'background 0.2s' }}
+                  >
+                    {e2ePasswordLoading ? 'Verifying…' : 'Verify'}
+                  </button>
+                </div>
+              </>
             )}
-            <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
-              <button
-                onClick={() => restoreE2eKeyWithPassword(e2ePasswordInput)}
-                disabled={!e2ePasswordInput || e2ePasswordLoading}
-                style={{ flex: 1, padding: '11px', borderRadius: 10, border: 'none', background: e2ePasswordInput && !e2ePasswordLoading ? '#25d366' : '#334155', color: 'white', cursor: e2ePasswordInput && !e2ePasswordLoading ? 'pointer' : 'default', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', transition: 'background 0.2s' }}
-              >
-                {e2ePasswordLoading ? 'Verifying…' : 'Verify'}
-              </button>
-            </div>
+
+            {passwordValidated && (
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#25d366', animation: 'pulse 1.5s infinite' }} />
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#25d366', animation: 'pulse 1.5s infinite 0.3s' }} />
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#25d366', animation: 'pulse 1.5s infinite 0.6s' }} />
+              </div>
+            )}
+
             <p style={{ margin: '14px 0 0', fontSize: 11, color: '#475569', textAlign: 'center' }}>
-              Password verified once per session.
+              {passwordValidated ? 'Unlocking messages...' : 'Password verified once per session.'}
             </p>
           </div>
         </div>
       )}
+
+      {/* Full Screen Loading - While decrypting messages */}
+      {decryptingMessages && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.9)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 24 }}>
+          <div style={{ fontSize: 60 }}>🔓</div>
+          <div style={{ fontSize: 18, color: '#f1f5f9', fontWeight: 600 }}>Decrypting Messages</div>
+          <div style={{ width: 40, height: 40, border: '4px solid rgba(255,255,255,0.2)', borderTopColor: '#25d366', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+          <div style={{ fontSize: 13, color: '#94a3b8' }}>Loading your messages...</div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 0.3; }
+          50% { opacity: 1; }
+        }
+      `}</style>
     </div>
   )
 }
