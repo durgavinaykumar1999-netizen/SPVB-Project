@@ -13,11 +13,8 @@ if (typeof window !== 'undefined' && !window.__spvb_api_logged) {
 }
 
 export const apiUrl = (path) => {
-  // Backend routes don't have /api prefix, so strip it
-  // Frontend calls: /api/auth/login
-  // Backend expects: /auth/login
-  const strippedPath = path.replace(/^\/api/, '') || path
-  const fullUrl = `${BACKEND}${strippedPath}`
+  // Send path as-is - backend expects /api prefix
+  const fullUrl = `${BACKEND}${path}`
   console.log(`[API] ${path} → ${fullUrl}`)
   return fullUrl
 }
