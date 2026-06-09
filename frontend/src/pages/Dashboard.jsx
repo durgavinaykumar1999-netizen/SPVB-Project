@@ -8523,53 +8523,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       )}
 
       {/* ── E2E Key Restore Modal — shown after QR/new device login or for Google users ── */}
-      {/* COMMENTED OUT: Encryption Password Modal - Silent restore in background
-      {e2ePasswordNeeded && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-          <div style={{ background: '#1e293b', borderRadius: 16, padding: 32, width: '100%', maxWidth: 380, boxShadow: '0 24px 60px rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
-            <div style={{ textAlign: 'center', marginBottom: 20 }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>🔐</div>
-              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>Encryption Password</h2>
-              <p style={{ margin: '8px 0 0', fontSize: 13, color: '#94a3b8', lineHeight: 1.5 }}>
-                {isGoogleUser()
-                  ? 'Enter your account password to decrypt your messages and setup encryption on this device.'
-                  : 'Enter your password to decrypt your messages on this device.'}
-              </p>
-            </div>
-            <input
-              type="password"
-              placeholder="Your account password"
-              value={e2ePasswordInput}
-              onChange={e => setE2ePasswordInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !e2ePasswordLoading && restoreE2eKeyWithPassword(e2ePasswordInput)}
-              autoFocus
-              style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: `1px solid ${e2ePasswordError ? '#ef4444' : 'rgba(255,255,255,0.1)'}`, background: 'rgba(255,255,255,0.05)', color: '#f1f5f9', fontSize: 15, outline: 'none', boxSizing: 'border-box', marginBottom: 8 }}
-            />
-            {e2ePasswordError && (
-              <p style={{ margin: '0 0 12px', fontSize: 12, color: '#ef4444' }}>{e2ePasswordError}</p>
-            )}
-            <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
-              <button
-                onClick={() => { setE2ePasswordNeeded(false); setE2ePasswordInput(''); setE2ePasswordError('') }}
-                style={{ flex: 1, padding: '11px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontSize: 14, fontFamily: 'inherit' }}
-              >
-                Skip
-              </button>
-              <button
-                onClick={() => restoreE2eKeyWithPassword(e2ePasswordInput)}
-                disabled={!e2ePasswordInput || e2ePasswordLoading}
-                style={{ flex: 2, padding: '11px', borderRadius: 10, border: 'none', background: e2ePasswordInput && !e2ePasswordLoading ? '#25d366' : '#334155', color: 'white', cursor: e2ePasswordInput && !e2ePasswordLoading ? 'pointer' : 'default', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', transition: 'background 0.2s' }}
-              >
-                {e2ePasswordLoading ? 'Restoring…' : 'Restore Keys'}
-              </button>
-            </div>
-            <p style={{ margin: '14px 0 0', fontSize: 11, color: '#475569', textAlign: 'center' }}>
-              Your password never leaves your device. Keys are encrypted end-to-end.
-            </p>
-          </div>
-        </div>
-      )}
-      */}
+      {/* Encryption Password Modal - REMOVED for silent background restore */}
     </div>
   )
 }
