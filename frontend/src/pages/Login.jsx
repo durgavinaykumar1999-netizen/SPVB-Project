@@ -75,17 +75,28 @@ function QRPanel({ onLogin }) {
           const msg = JSON.parse(ev.data)
           console.log('[QRPanel] WebSocket message:', msg.type, msg)
 
-          if (msg.type === 'qr_approved' && msg.token) {
+          if (msg.type === 'qr_approved') {
             clearInterval(timerRef.current)
-            console.log('[QRPanel] QR approved! Token received:', msg.token.slice(0, 20) + '...')
+
+            // Handle both "token" and "jwt" field names (for backward compatibility)
+            const jwtToken = msg.token || msg.jwt
+            if (!jwtToken) {
+              console.error('[QRPanel] ❌ No JWT token in message! Got:', msg)
+              setStatus('error')
+              setMessage('Invalid approval message - no token received')
+              return
+            }
+
+            console.log('[QRPanel] ✅ QR approved! Token received:', jwtToken.slice(0, 20) + '...')
 
             // Store token immediately
-            const success = setSecureToken(msg.token, msg.user, msg.session_id)
+            const success = setSecureToken(jwtToken, msg.user, msg.session_id)
             console.log('[QRPanel] Token stored:', success)
 
             if (!success) {
               console.error('[QRPanel] ❌ Failed to store token securely')
               setStatus('error')
+              setMessage('Failed to store authentication token')
               return
             }
 
