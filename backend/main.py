@@ -1668,14 +1668,14 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
 
 # ── Public Key Exchange (E2E) ─────────────────────────────
 
-@app.put("/users/me/pubkey")
+@app.put("/api/users/me/pubkey")
 def set_pubkey(body: dict, cu: dict = Depends(get_current_user)):
     # Only store if it looks like an ECDH key (kty=EC) — reject RSA keys here
     raw = body.get("pubkey", "")
     mdb_update_user(cu["user_id"], {"pubkey": raw})
     return {"ok": True}
 
-@app.get("/users/{user_id}/pubkey")
+@app.get("/api/users/{user_id}/pubkey")
 def get_pubkey(user_id: int, cu: dict = Depends(get_current_user)):
     doc = col_users.find_one({"id": user_id}, {"_id": 0, "pubkey": 1})
     if doc is None:
@@ -1687,12 +1687,12 @@ def get_pubkey(user_id: int, cu: dict = Depends(get_current_user)):
     )
 
 # V2 RSA-OAEP pubkey — stored separately so V1 ECDH key is never overwritten
-@app.put("/users/me/pubkey_v2")
+@app.put("/api/users/me/pubkey_v2")
 def set_pubkey_v2(body: dict, cu: dict = Depends(get_current_user)):
     mdb_update_user(cu["user_id"], {"pubkey_v2": body.get("pubkey", "")})
     return {"ok": True}
 
-@app.get("/users/{user_id}/pubkey_v2")
+@app.get("/api/users/{user_id}/pubkey_v2")
 def get_pubkey_v2(user_id: int, cu: dict = Depends(get_current_user)):
     doc = col_users.find_one({"id": user_id}, {"_id": 0, "pubkey_v2": 1})
     if doc is None:
@@ -1703,7 +1703,7 @@ def get_pubkey_v2(user_id: int, cu: dict = Depends(get_current_user)):
         headers={"Cache-Control": "public, max-age=60" if pubkey else "no-store"},
     )
 
-@app.get("/users/me/e2e-status")
+@app.get("/api/users/me/e2e-status")
 def get_e2e_status(cu: dict = Depends(get_current_user)):
     """Self-service E2E status — any user can check their own key health."""
     my_id = cu["user_id"]
@@ -1736,7 +1736,7 @@ def get_e2e_status(cu: dict = Depends(get_current_user)):
 
 # ── E2E Key Backup (encrypted with user's password via PBKDF2) ────────────
 
-@app.put("/users/me/key-backup")
+@app.put("/api/users/me/key-backup")
 def set_key_backup(body: dict, cu: dict = Depends(get_current_user)):
     """Store V1 ECDH private key encrypted with password (PBKDF2+AES-GCM)."""
     backup = body.get("backup", "")
@@ -1745,7 +1745,7 @@ def set_key_backup(body: dict, cu: dict = Depends(get_current_user)):
     mdb_update_user(cu["user_id"], {"e2e_key_backup": backup})
     return {"ok": True}
 
-@app.get("/users/me/key-backup")
+@app.get("/api/users/me/key-backup")
 def get_key_backup(cu: dict = Depends(get_current_user)):
     """Retrieve V1 ECDH encrypted private key backup."""
     u = mdb_get_user_by_id(cu["user_id"])
@@ -1753,7 +1753,7 @@ def get_key_backup(cu: dict = Depends(get_current_user)):
 
 # ── V2 RSA-OAEP Key Backup — separate field, never overwrites V1 ──────────
 
-@app.put("/users/me/key-backup-v2")
+@app.put("/api/users/me/key-backup-v2")
 def set_key_backup_v2(body: dict, cu: dict = Depends(get_current_user)):
     """Store V2 RSA-OAEP private key encrypted with password (PBKDF2+AES-GCM)."""
     backup = body.get("backup", "")
@@ -1762,13 +1762,13 @@ def set_key_backup_v2(body: dict, cu: dict = Depends(get_current_user)):
     mdb_update_user(cu["user_id"], {"e2e_key_backup_v2": backup})
     return {"ok": True}
 
-@app.get("/users/me/key-backup-v2")
+@app.get("/api/users/me/key-backup-v2")
 def get_key_backup_v2(cu: dict = Depends(get_current_user)):
     """Retrieve V2 RSA-OAEP encrypted private key backup."""
     u = mdb_get_user_by_id(cu["user_id"])
     return {"backup": u.get("e2e_key_backup_v2", "") if u else ""}
 
-@app.put("/users/me/password")
+@app.put("/api/users/me/password")
 def change_password(body: dict, cu: dict = Depends(get_current_user)):
     """Change password and re-encrypt both key backups atomically."""
     old_pw  = body.get("old_password", "")
@@ -1790,11 +1790,11 @@ def change_password(body: dict, cu: dict = Depends(get_current_user)):
 
 # ── Push Notifications ────────────────────────────────────
 
-@app.get("/push/vapid-public-key")
+@app.get("/api/push/vapid-public-key")
 def get_vapid_public_key():
     return {"publicKey": _VAPID_PUBLIC_KEY}
 
-@app.post("/push/subscribe")
+@app.post("/api/push/subscribe")
 def push_subscribe(body: dict, cu: dict = Depends(get_current_user)):
     endpoint = body.get("endpoint", "")
     p256dh   = body.get("keys", {}).get("p256dh", "")
@@ -1809,14 +1809,14 @@ def push_subscribe(body: dict, cu: dict = Depends(get_current_user)):
     )
     return {"ok": True}
 
-@app.delete("/push/subscribe")
+@app.delete("/api/push/subscribe")
 def push_unsubscribe(body: dict, cu: dict = Depends(get_current_user)):
     endpoint = body.get("endpoint", "")
     if endpoint:
         col_push_subs.delete_one({"endpoint": endpoint, "user_id": cu["user_id"]})
     return {"ok": True}
 
-@app.post("/push/fcm-token")
+@app.post("/api/push/fcm-token")
 def register_fcm_token(body: dict, cu: dict = Depends(get_current_user)):
     """Register an FCM device token for the current user, linked to the current session."""
     token = (body.get("token") or "").strip()
@@ -1830,7 +1830,7 @@ def register_fcm_token(body: dict, cu: dict = Depends(get_current_user)):
     )
     return {"ok": True}
 
-@app.delete("/push/fcm-token")
+@app.delete("/api/push/fcm-token")
 def unregister_fcm_token(body: dict, cu: dict = Depends(get_current_user)):
     token = (body.get("token") or "").strip()
     session_id = cu.get("session_id", "")
@@ -1844,7 +1844,7 @@ def unregister_fcm_token(body: dict, cu: dict = Depends(get_current_user)):
         mdb_delete_session(session_id, cu["user_id"])
     return {"ok": True}
 
-@app.post("/auth/logout")
+@app.post("/api/auth/logout")
 def logout(cu: dict = Depends(get_current_user)):
     """Remove the current session record — called on logout when no FCM token exists."""
     session_id = cu.get("session_id", "")
@@ -1852,7 +1852,7 @@ def logout(cu: dict = Depends(get_current_user)):
         mdb_delete_session(session_id, cu["user_id"])
     return {"ok": True}
 
-@app.post("/push/test")
+@app.post("/api/push/test")
 def push_test(cu: dict = Depends(get_current_user)):
     """Fire a test push notification to the calling user (for debugging)."""
     name = cu.get("display_name") or cu.get("username", "You")
@@ -1866,21 +1866,21 @@ def push_test(cu: dict = Depends(get_current_user)):
 
 # ── Health ────────────────────────────────────────────────
 
-@app.get("/")
+@app.get("/api/")
 def root():
     return {"message": "SPVB API", "version": "1.3.0"}
 
-@app.get("/health")
+@app.get("/api/health")
 def health():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat() + "Z"}
 
-@app.get("/ping")
+@app.get("/api/ping")
 def ping():
     return {"ok": True}
 
 # ── Auth ──────────────────────────────────────────────────
 
-@app.post("/auth/register", response_model=TokenResponse)
+@app.post("/api/auth/register", response_model=TokenResponse)
 def register(req: RegisterRequest):
     if mdb_get_user_by_email(req.email):
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -1899,7 +1899,7 @@ def register(req: RegisterRequest):
     token = create_jwt_token({"user_id": uid, "username": req.username, "email": req.email, "role": "user", "display_name": req.username, "avatar_url": ""})
     return {"token": token, "user": {"id": uid, "username": req.username, "email": req.email, "phone": req.phone or "", "role": "user", "display_name": req.username, "avatar_url": ""}}
 
-@app.post("/auth/login", response_model=TokenResponse)
+@app.post("/api/auth/login", response_model=TokenResponse)
 def login(req: LoginRequest, request: Request):
     admin_email = os.getenv("ADMIN_EMAIL")
     admin_password = os.getenv("ADMIN_PASSWORD", "")
@@ -1950,7 +1950,7 @@ def login(req: LoginRequest, request: Request):
         return {"token": token, "session_id": session_id, "user": {"id": u["id"], "username": u["username"], "email": u["email"], "phone": u.get("phone", ""), "role": u.get("role", "user"), "display_name": u.get("display_name", u["username"]), "avatar_url": u.get("avatar_url", ""), "cover_url": u.get("cover_url", "")}}
     raise HTTPException(status_code=401, detail="Incorrect password")
 
-@app.post("/auth/verify-password")
+@app.post("/api/auth/verify-password")
 def verify_password_endpoint(body: dict, cu: dict = Depends(get_current_user)):
     """Verify the current user's password — used by the app lock screen fallback."""
     pw = body.get("password", "")
@@ -1972,7 +1972,7 @@ def verify_password_endpoint(body: dict, cu: dict = Depends(get_current_user)):
         raise HTTPException(status_code=401, detail="Wrong password")
     return {"ok": True}
 
-@app.post("/auth/google", response_model=TokenResponse)
+@app.post("/api/auth/google", response_model=TokenResponse)
 def google_login(req: GoogleAuthRequest, request: Request):
     try:
         with urllib.request.urlopen(f"https://oauth2.googleapis.com/tokeninfo?id_token={req.token}", timeout=10) as r:
@@ -2016,7 +2016,7 @@ def google_login(req: GoogleAuthRequest, request: Request):
     needs_setup = not user.get("has_password") or not user.get("phone")
     return {"token": tok, "session_id": session_id, "user": {"id": user["id"], "username": user["username"], "email": email, "role": user.get("role", "user"), "display_name": user.get("display_name", name), "avatar_url": user.get("avatar_url", picture)}, "is_new_user": is_new_user, "needs_setup": needs_setup}
 
-@app.get("/auth/me")
+@app.get("/api/auth/me")
 def get_me(cu: dict = Depends(get_current_user)):
     u = mdb_get_user_by_id(cu["user_id"])
     if not u:
@@ -2031,7 +2031,7 @@ def get_me(cu: dict = Depends(get_current_user)):
         "about": u.get("about", ""),
     }
 
-@app.post("/auth/set-password")
+@app.post("/api/auth/set-password")
 def set_password(req: SetPasswordRequest, cu: dict = Depends(get_current_user)):
     fields = {"password": hash_password(req.password), "has_password": True}
     if req.phone:
@@ -2039,7 +2039,7 @@ def set_password(req: SetPasswordRequest, cu: dict = Depends(get_current_user)):
     mdb_update_user(cu["user_id"], fields)
     return {"ok": True}
 
-@app.post("/auth/forgot-password")
+@app.post("/api/auth/forgot-password")
 def forgot_password(req: ForgotPasswordRequest):
     import secrets, string
     user = mdb_get_user_by_email(req.email)
@@ -2050,7 +2050,7 @@ def forgot_password(req: ForgotPasswordRequest):
     mdb_save_reset_token(req.email, {"code": code, "expires_at": expires, "user_id": user["id"]})
     return {"ok": True, "reset_code": code}
 
-@app.post("/auth/reset-password")
+@app.post("/api/auth/reset-password")
 def reset_password_endpoint(req: ResetPasswordRequest):
     email, entry = mdb_find_reset_token_by_code(req.code)
     if not entry:
@@ -2063,12 +2063,12 @@ def reset_password_endpoint(req: ResetPasswordRequest):
 
 # ── User Online Status ────────────────────────────────────
 
-@app.post("/users/me/status")
+@app.post("/api/users/me/status")
 def set_user_status(body: UserStatusUpdate, cu: dict = Depends(get_current_user)):
     mdb_set_status(cu["user_id"], cu.get("username", ""), cu.get("email", ""), body.status)
     return {"ok": True}
 
-@app.get("/contacts")
+@app.get("/api/contacts")
 def get_contacts(cu: dict = Depends(get_current_user)):
     _contact_proj = {"_id": 0, "id": 1, "username": 1, "email": 1, "display_name": 1,
                      "avatar_url": 1, "cover_url": 1, "about": 1, "phone": 1}
@@ -2104,12 +2104,12 @@ def get_contacts(cu: dict = Depends(get_current_user)):
         })
     return result
 
-@app.get("/contacts/saved")
+@app.get("/api/contacts/saved")
 def get_saved_contacts(cu: dict = Depends(get_current_user)):
     saved = mdb_get_saved_contacts(str(cu["user_id"]))
     return {"saved_contact_ids": saved}
 
-@app.post("/contacts/{contact_id}/save")
+@app.post("/api/contacts/{contact_id}/save")
 def save_contact(contact_id: int, cu: dict = Depends(get_current_user)):
     uid = str(cu["user_id"])
     saved = mdb_get_saved_contacts(uid)
@@ -2118,14 +2118,14 @@ def save_contact(contact_id: int, cu: dict = Depends(get_current_user)):
     mdb_save_saved_contacts(uid, saved)
     return {"ok": True}
 
-@app.delete("/contacts/{contact_id}/save")
+@app.delete("/api/contacts/{contact_id}/save")
 def unsave_contact(contact_id: int, cu: dict = Depends(get_current_user)):
     uid = str(cu["user_id"])
     saved = mdb_get_saved_contacts(uid)
     mdb_save_saved_contacts(uid, [c for c in saved if c != contact_id])
     return {"ok": True}
 
-@app.get("/users/find-by-phone")
+@app.get("/api/users/find-by-phone")
 def find_user_by_phone(phone: str, cu: dict = Depends(get_current_user)):
     raw = re.sub(r"[^\d]", "", phone)
     if not raw:
@@ -2142,7 +2142,7 @@ def find_user_by_phone(phone: str, cu: dict = Depends(get_current_user)):
             return {"id": u["id"], "username": u["username"], "display_name": u.get("display_name", u["username"]), "avatar_url": u.get("avatar_url", ""), "about": u.get("about", "Hey there! I am using SPVB.")}
     raise HTTPException(status_code=404, detail="No SPVB user found with this phone number")
 
-@app.put("/contacts/{contact_id}/nickname")
+@app.put("/api/contacts/{contact_id}/nickname")
 def set_nickname(contact_id: int, body: dict, cu: dict = Depends(get_current_user)):
     uid = str(cu["user_id"])
     mapping = mdb_get_nicknames(uid)
@@ -2156,7 +2156,7 @@ def set_nickname(contact_id: int, body: dict, cu: dict = Depends(get_current_use
 
 VALID_RINGTONES = {"default","chime","bell","marimba","pop","soft","alert","ding","whistle","none"}
 
-@app.put("/contacts/{contact_id}/ringtone")
+@app.put("/api/contacts/{contact_id}/ringtone")
 def set_contact_ringtone(contact_id: int, body: dict, cu: dict = Depends(get_current_user)):
     uid = str(cu["user_id"])
     ringtone = str(body.get("ringtone", "default")).strip()
@@ -2171,13 +2171,13 @@ def set_contact_ringtone(contact_id: int, body: dict, cu: dict = Depends(get_cur
     col_ringtones.replace_one({"user_id": uid}, {"user_id": uid, "map": mapping}, upsert=True)
     return {"ok": True, "ringtone": ringtone}
 
-@app.get("/contacts/ringtones")
+@app.get("/api/contacts/ringtones")
 def get_contact_ringtones(cu: dict = Depends(get_current_user)):
     uid = str(cu["user_id"])
     doc = col_ringtones.find_one({"user_id": uid}, {"_id": 0}) or {}
     return doc.get("map", {})
 
-@app.post("/contacts/{contact_id}/block")
+@app.post("/api/contacts/{contact_id}/block")
 def block_contact(contact_id: int, cu: dict = Depends(get_current_user)):
     uid = str(cu["user_id"])
     ids = mdb_get_blocked(uid)
@@ -2186,14 +2186,14 @@ def block_contact(contact_id: int, cu: dict = Depends(get_current_user)):
     mdb_save_blocked(uid, ids)
     return {"ok": True}
 
-@app.delete("/contacts/{contact_id}/block")
+@app.delete("/api/contacts/{contact_id}/block")
 def unblock_contact(contact_id: int, cu: dict = Depends(get_current_user)):
     uid = str(cu["user_id"])
     ids = mdb_get_blocked(uid)
     mdb_save_blocked(uid, [x for x in ids if x != contact_id])
     return {"ok": True}
 
-@app.get("/contacts/blocked")
+@app.get("/api/contacts/blocked")
 def get_blocked_contacts(cu: dict = Depends(get_current_user)):
     ids = mdb_get_blocked(str(cu["user_id"]))
     result = []
@@ -2203,7 +2203,7 @@ def get_blocked_contacts(cu: dict = Depends(get_current_user)):
             result.append({"id": u["id"], "username": u["username"], "display_name": u.get("display_name", u["username"]), "avatar_url": u.get("avatar_url", "")})
     return result
 
-@app.put("/auth/me")
+@app.put("/api/auth/me")
 def update_me(body: dict, cu: dict = Depends(get_current_user)):
     u = mdb_get_user_by_id(cu["user_id"])
     if not u:
@@ -2238,11 +2238,11 @@ def update_me(body: dict, cu: dict = Depends(get_current_user)):
 
 # ── Messages ──────────────────────────────────────────────
 
-@app.get("/messages/recent")
+@app.get("/api/messages/recent")
 def get_recent_conversations(cu: dict = Depends(get_current_user)):
     return db_get_recent_conversations_fast(cu["user_id"])
 
-@app.put("/messages/read/{contact_id}")
+@app.put("/api/messages/read/{contact_id}")
 async def mark_messages_read(contact_id: int, cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     marked_ids = db_mark_messages_read(contact_id, my_id)
@@ -2250,7 +2250,7 @@ async def mark_messages_read(contact_id: int, cu: dict = Depends(get_current_use
         await ws_manager.send(str(contact_id), {"type": "read_receipt", "by": my_id, "message_ids": marked_ids})
     return {"ok": True, "count": len(marked_ids)}
 
-@app.get("/messages/conversation/{contact_id}")
+@app.get("/api/messages/conversation/{contact_id}")
 async def get_conversation(contact_id: int, since_id: int = 0, cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     room = f"dm_{min(my_id, contact_id)}_{max(my_id, contact_id)}"
@@ -2262,7 +2262,7 @@ async def get_conversation(contact_id: int, since_id: int = 0, cu: dict = Depend
         await ws_manager.send(str(contact_id), {"type": "message_delivered", "message_ids": undelivered, "by": my_id})
     return messages
 
-@app.get("/users/online")
+@app.get("/api/users/online")
 def get_online_users(cu: dict = Depends(get_current_user)):
     # Only expose presence for contacts the requester has saved (privacy)
     saved = set(str(i) for i in mdb_get_saved_contacts(str(cu["user_id"])))
@@ -2288,7 +2288,7 @@ def get_online_users(cu: dict = Depends(get_current_user)):
 
 # ── Admin Stats ───────────────────────────────────────────
 
-@app.get("/admin/stats")
+@app.get("/api/admin/stats")
 def admin_stats(cu: dict = Depends(get_current_user)):
     if cu.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
@@ -2328,7 +2328,7 @@ def admin_stats(cu: dict = Depends(get_current_user)):
         "recent_logins": list(reversed(events[-50:])),
     }
 
-@app.post("/admin/cleanup")
+@app.post("/api/admin/cleanup")
 def admin_cleanup(cu: dict = Depends(get_current_user)):
     """Manually trigger a full database cleanup — admin only."""
     if cu.get("role") != "admin":
@@ -2356,7 +2356,7 @@ def admin_cleanup(cu: dict = Depends(get_current_user)):
         }
     }
 
-@app.get("/admin/storage")
+@app.get("/api/admin/storage")
 def admin_storage(cu: dict = Depends(get_current_user)):
     """Show storage usage per collection — admin only."""
     if cu.get("role") != "admin":
@@ -2375,7 +2375,7 @@ def admin_storage(cu: dict = Depends(get_current_user)):
     total_kb = sum(v["storage_kb"] for v in result.values())
     return {"collections": result, "total_storage_kb": round(total_kb, 1), "total_storage_mb": round(total_kb / 1024, 2)}
 
-@app.get("/admin/e2e-report")
+@app.get("/api/admin/e2e-report")
 def admin_e2e_report(cu: dict = Depends(get_current_user)):
     """
     Production E2E investigation report — admin only.
@@ -2450,7 +2450,7 @@ def admin_e2e_report(cu: dict = Depends(get_current_user)):
     }
 
 # ── Admin: Impersonate user ───────────────────────────────
-@app.post("/admin/impersonate/{user_id}")
+@app.post("/api/admin/impersonate/{user_id}")
 def admin_impersonate(user_id: int, cu: dict = Depends(get_current_user)):
     """Admin-only: generate a short-lived JWT to log in as any user."""
     if cu.get("role") != "admin":
@@ -2496,7 +2496,7 @@ def admin_impersonate(user_id: int, cu: dict = Depends(get_current_user)):
 
 # ── Messages POST ─────────────────────────────────────────
 
-@app.post("/messages")
+@app.post("/api/messages")
 async def create_message(msg: MessageRequest, cu: dict = Depends(get_current_user)):
     _now = datetime.utcnow()
     # Server keeps messages for 30 days max — each client filters by their own retention setting
@@ -2553,7 +2553,7 @@ async def create_message(msg: MessageRequest, cu: dict = Depends(get_current_use
             threading.Thread(target=_send_push, args=(msg.recipient_id, sender_name, push_body, {"type": "message", "from": str(cu["user_id"])}), daemon=True).start()
     return message
 
-@app.delete("/messages/{message_id}")
+@app.delete("/api/messages/{message_id}")
 async def delete_message(message_id: int, cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     msg = col_messages.find_one({"id": message_id})
@@ -2571,7 +2571,7 @@ async def delete_message(message_id: int, cu: dict = Depends(get_current_user)):
         await ws_manager.send(str(recipient_id), {"type": "message_deleted", "message_id": message_id})
     return {"ok": True}
 
-@app.get("/messages/{room}")
+@app.get("/api/messages/{room}")
 def get_messages(room: str, cu: dict = Depends(get_current_user)):
     return db_get_messages_room(room)
 
@@ -2584,7 +2584,7 @@ _DOC_EXTS = {'.pdf', '.doc', '.docx', '.txt', '.xlsx', '.xls', '.pptx', '.ppt', 
 _SIZE_MAP  = {"image": LIMIT_IMAGE, "video": LIMIT_VIDEO, "audio": LIMIT_AUDIO, "document": LIMIT_DOC}
 _SIZE_LABEL = {"image": "10 MB", "video": "50 MB", "audio": "16 MB", "document": "25 MB"}
 
-@app.post("/upload")
+@app.post("/api/upload")
 async def upload_file(
     file: UploadFile = File(None),
     type: str = "avatar",
@@ -2622,7 +2622,7 @@ async def upload_file(
     url = _upload_media(data, ext, mtype, folder=folder)
     return {"url": url}
 
-@app.post("/messages/media")
+@app.post("/api/messages/media")
 async def send_media_message(
     file: UploadFile = File(...),
     recipient_id: int = Form(...),
@@ -2669,7 +2669,7 @@ async def send_media_message(
 
 # ── Statuses ──────────────────────────────────────────────
 
-@app.post("/statuses")
+@app.post("/api/statuses")
 async def create_status(body: StatusRequest, cu: dict = Depends(get_current_user)):
     mdb_cleanup_expired_statuses()
     user = mdb_get_user_by_id(cu["user_id"]) or {}
@@ -2697,7 +2697,7 @@ async def create_status(body: StatusRequest, cu: dict = Depends(get_current_user
             await ws_manager.send(uid, {"type": "new_status", "status": s})
     return s
 
-@app.get("/statuses")
+@app.get("/api/statuses")
 def get_statuses(cu: dict = Depends(get_current_user)):
     mdb_cleanup_expired_statuses()
     now = datetime.utcnow()
@@ -2729,7 +2729,7 @@ def get_statuses(cu: dict = Depends(get_current_user)):
         result.append(entry)
     return result
 
-@app.delete("/statuses/{status_id}")
+@app.delete("/api/statuses/{status_id}")
 def delete_status(status_id: int, cu: dict = Depends(get_current_user)):
     s = mdb_get_status_by_id(status_id)
     if not s:
@@ -2747,7 +2747,7 @@ def delete_status(status_id: int, cu: dict = Depends(get_current_user)):
     mdb_delete_status(status_id)
     return {"ok": True}
 
-@app.post("/statuses/{status_id}/view")
+@app.post("/api/statuses/{status_id}/view")
 def view_status(status_id: int, cu: dict = Depends(get_current_user)):
     s = mdb_get_status_by_id(status_id)
     if not s:
@@ -2759,7 +2759,7 @@ def view_status(status_id: int, cu: dict = Depends(get_current_user)):
         return {"view_count": len(viewed_by)}
     return {"view_count": s.get("view_count", 0)}
 
-@app.post("/statuses/{status_id}/react")
+@app.post("/api/statuses/{status_id}/react")
 async def react_status(status_id: int, body: dict, cu: dict = Depends(get_current_user)):
     s = mdb_get_status_by_id(status_id)
     if not s:
@@ -2776,7 +2776,7 @@ async def react_status(status_id: int, body: dict, cu: dict = Depends(get_curren
 
 # ── Call Logs ─────────────────────────────────────────────
 
-@app.post("/call-logs")
+@app.post("/api/call-logs")
 def save_call_log(body: dict, cu: dict = Depends(get_current_user)):
     contact_id = int(body.get("contact_id", 0))
     contact = mdb_get_user_by_id(contact_id)
@@ -2794,13 +2794,13 @@ def save_call_log(body: dict, cu: dict = Depends(get_current_user)):
     # contact_username/display_name/avatar_url NOT stored — fetched live from users on read
     return mdb_save_call_log(log)
 
-@app.get("/call-logs")
+@app.get("/api/call-logs")
 def get_call_logs(cu: dict = Depends(get_current_user)):
     return mdb_get_call_logs(cu["user_id"])
 
 # ── Phone Contact Sync ────────────────────────────────────
 
-@app.post("/contacts/sync-phones")
+@app.post("/api/contacts/sync-phones")
 def sync_phone_contacts(body: dict, cu: dict = Depends(get_current_user)):
     phones = body.get("phones", [])
     if not isinstance(phones, list):
@@ -2826,7 +2826,7 @@ def sync_phone_contacts(body: dict, cu: dict = Depends(get_current_user)):
 
 # ── Users CRUD ────────────────────────────────────────────
 
-@app.post("/users", response_model=dict)
+@app.post("/api/users", response_model=dict)
 def create_user(user: User, cu: dict = Depends(get_current_user)):
     if cu.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
@@ -2835,7 +2835,7 @@ def create_user(user: User, cu: dict = Depends(get_current_user)):
     mdb_save_user(new_user)
     return {"id": uid, "message": "User created"}
 
-@app.get("/users")
+@app.get("/api/users")
 def get_users(cu: dict = Depends(get_current_user)):
     if cu.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
@@ -2859,7 +2859,7 @@ def get_users(cu: dict = Depends(get_current_user)):
         result.append({"id": u["id"], "username": u["username"], "email": u["email"], "role": u.get("role", "user"), "created_at": u.get("created_at"), "avatar_url": u.get("avatar_url", ""), "display_name": u.get("display_name", ""), "online_status": online, "last_seen": last_seen, "login_count": login_count, "last_login": last_login})
     return result
 
-@app.get("/users/{user_id}")
+@app.get("/api/users/{user_id}")
 def get_user(user_id: int, cu: dict = Depends(get_current_user)):
     if cu.get("role") != "admin" and cu.get("user_id") != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -2868,7 +2868,7 @@ def get_user(user_id: int, cu: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="User not found")
     return {"id": u["id"], "username": u["username"], "email": u["email"], "role": u.get("role", "user"), "created_at": u.get("created_at")}
 
-@app.put("/users/{user_id}")
+@app.put("/api/users/{user_id}")
 def update_user(user_id: int, user: User, cu: dict = Depends(get_current_user)):
     if cu.get("role") != "admin" and cu.get("user_id") != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -2879,7 +2879,7 @@ def update_user(user_id: int, user: User, cu: dict = Depends(get_current_user)):
     mdb_save_user(updated)
     return {"id": user_id, "message": "User updated"}
 
-@app.delete("/users/{user_id}")
+@app.delete("/api/users/{user_id}")
 def delete_user(user_id: int, cu: dict = Depends(get_current_user)):
     # Allow self-deletion or admin deletion
     if cu.get("role") != "admin" and cu.get("user_id") != user_id:
@@ -2900,7 +2900,7 @@ def delete_user(user_id: int, cu: dict = Depends(get_current_user)):
 col_items = mdb["items"]
 _idx(col_items, "id", unique=True)
 
-@app.post("/items")
+@app.post("/api/items")
 def create_item(item: Item, cu: dict = Depends(get_current_user)):
     iid = _next_id(col_items)
     doc = item.model_dump(mode="json")
@@ -2909,18 +2909,18 @@ def create_item(item: Item, cu: dict = Depends(get_current_user)):
     col_items.insert_one(doc)
     return {"id": iid, "message": "Item created"}
 
-@app.get("/items")
+@app.get("/api/items")
 def get_items(cu: dict = Depends(get_current_user)):
     return [{k: v for k, v in i.items() if k != "_id"} for i in col_items.find()]
 
-@app.get("/items/{item_id}")
+@app.get("/api/items/{item_id}")
 def get_item(item_id: int, cu: dict = Depends(get_current_user)):
     item = col_items.find_one({"id": item_id}, {"_id": 0})
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     return item
 
-@app.put("/items/{item_id}")
+@app.put("/api/items/{item_id}")
 def update_item(item_id: int, item: Item, cu: dict = Depends(get_current_user)):
     existing = col_items.find_one({"id": item_id})
     if not existing:
@@ -2931,7 +2931,7 @@ def update_item(item_id: int, item: Item, cu: dict = Depends(get_current_user)):
     col_items.replace_one({"id": item_id}, doc)
     return {"id": item_id, "message": "Item updated"}
 
-@app.delete("/items/{item_id}")
+@app.delete("/api/items/{item_id}")
 def delete_item(item_id: int, cu: dict = Depends(get_current_user)):
     col_items.delete_one({"id": item_id})
     return {"message": "Item deleted"}
@@ -3025,7 +3025,7 @@ def _group_member_details(members: list, user_map: dict) -> list:
         for m in members
     ]
 
-@app.post("/groups")
+@app.post("/api/groups")
 async def create_group(body: CreateGroupRequest, cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     user_map = {u["id"]: u for u in mdb_get_users()}
@@ -3039,7 +3039,7 @@ async def create_group(body: CreateGroupRequest, cu: dict = Depends(get_current_
             await ws_manager.send(str(mid), {"type": "group_created", "group": {**group, "member_details": _group_member_details(members, user_map)}})
     return {**group, "member_details": _group_member_details(members, user_map)}
 
-@app.get("/groups")
+@app.get("/api/groups")
 def get_groups(cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     user_map = {u["id"]: u for u in mdb_get_users()}
@@ -3052,7 +3052,7 @@ def get_groups(cu: dict = Depends(get_current_user)):
         result.append({**g, "member_details": _group_member_details(g.get("members", []), user_map), "last_message": last.get("content", "") if last else "", "last_message_time": last.get("created_at", "") if last else ""})
     return result
 
-@app.get("/groups/{group_id}/messages")
+@app.get("/api/groups/{group_id}/messages")
 def get_group_messages(group_id: int, cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     group = mdb_get_group(group_id)
@@ -3062,7 +3062,7 @@ def get_group_messages(group_id: int, cu: dict = Depends(get_current_user)):
     msgs = mdb_get_group_messages(group_id)
     return [{**m, "sender_name": user_map[m["from_user_id"]].get("display_name", user_map[m["from_user_id"]]["username"]) if m["from_user_id"] in user_map else str(m["from_user_id"]), "sender_avatar": user_map[m["from_user_id"]].get("avatar_url", "") if m["from_user_id"] in user_map else ""} for m in msgs]
 
-@app.post("/groups/{group_id}/messages")
+@app.post("/api/groups/{group_id}/messages")
 async def send_group_message(group_id: int, body: GroupMessageRequest, cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     group = mdb_get_group(group_id)
@@ -3080,7 +3080,7 @@ async def send_group_message(group_id: int, body: GroupMessageRequest, cu: dict 
             await ws_manager.send(str(mid), {"type": "group_message", "message": broadcast, "group_id": group_id, "group_name": group["name"]})
     return broadcast
 
-@app.post("/groups/{group_id}/media")
+@app.post("/api/groups/{group_id}/media")
 async def send_group_media(group_id: int, file: UploadFile = File(...), cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     group = mdb_get_group(group_id)
@@ -3104,7 +3104,7 @@ async def send_group_media(group_id: int, file: UploadFile = File(...), cu: dict
             await ws_manager.send(str(mid), {"type": "group_message", "message": broadcast, "group_id": group_id, "group_name": group["name"]})
     return broadcast
 
-@app.put("/groups/{group_id}")
+@app.put("/api/groups/{group_id}")
 def update_group(group_id: int, body: dict, cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     group = mdb_get_group(group_id)
@@ -3117,7 +3117,7 @@ def update_group(group_id: int, body: dict, cu: dict = Depends(get_current_user)
     mdb_save_group(group)
     return group
 
-@app.delete("/groups/{group_id}/members/{user_id}")
+@app.delete("/api/groups/{group_id}/members/{user_id}")
 def remove_group_member(group_id: int, user_id: int, cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     group = mdb_get_group(group_id)
@@ -3129,7 +3129,7 @@ def remove_group_member(group_id: int, user_id: int, cu: dict = Depends(get_curr
     mdb_save_group(group)
     return group
 
-@app.post("/groups/{group_id}/members")
+@app.post("/api/groups/{group_id}/members")
 def add_group_member(group_id: int, body: dict, cu: dict = Depends(get_current_user)):
     my_id = cu["user_id"]
     group = mdb_get_group(group_id)
@@ -3203,7 +3203,7 @@ def _parse_device_info(ua: str) -> dict:
     device_name = f"{browser} on {os_name}"
     return {"device_name": device_name, "device_type": dtype, "os": os_name, "browser": browser}
 
-@app.post("/auth/qr/generate")
+@app.post("/api/auth/qr/generate")
 async def generate_qr_login(request: Request):
     """Public endpoint — desktop calls this to get a QR login token."""
     mdb_delete_expired_qr()
@@ -3225,7 +3225,7 @@ async def generate_qr_login(request: Request):
     })
     return {"token": token, "expires_at": expires_at}
 
-@app.get("/auth/qr/{token}/info")
+@app.get("/api/auth/qr/{token}/info")
 async def get_qr_info(token: str):
     """Public — returns minimal info about the QR token (browser, status) for the approve screen."""
     rec = mdb_get_qr_token(token)
@@ -3240,7 +3240,7 @@ async def get_qr_info(token: str):
         "expires_at": rec.get("expires_at", ""),
     }
 
-@app.post("/auth/qr/{token}/approve")
+@app.post("/api/auth/qr/{token}/approve")
 async def approve_qr_login(token: str, cu: dict = Depends(get_current_user)):
     """Mobile (logged-in) user approves QR login for desktop."""
     rec = mdb_get_qr_token(token)
@@ -3304,7 +3304,7 @@ async def approve_qr_login(token: str, cu: dict = Depends(get_current_user)):
     await ws_manager.send(f"qr_{token}", {"type": "qr_approved", "token": new_jwt, "session_id": session_id, "user": user_payload})
     return {"ok": True, "device_id": device_id}
 
-@app.post("/auth/qr/{token}/reject")
+@app.post("/api/auth/qr/{token}/reject")
 async def reject_qr_login(token: str, cu: dict = Depends(get_current_user)):
     """Mobile user rejects QR login."""
     rec = mdb_get_qr_token(token)
@@ -3315,7 +3315,7 @@ async def reject_qr_login(token: str, cu: dict = Depends(get_current_user)):
     await ws_manager.send(f"qr_{token}", {"type": "qr_rejected"})
     return {"ok": True}
 
-@app.get("/auth/qr/{token}/status")
+@app.get("/api/auth/qr/{token}/status")
 async def qr_login_status(token: str):
     rec = mdb_get_qr_token(token)
     if not rec or _parse_dt(rec.get("expires_at", "")) <= datetime.utcnow():
@@ -3324,14 +3324,14 @@ async def qr_login_status(token: str):
 
 # ── QR Device Linking ──────────────────────────────────────
 
-@app.post("/devices/qr/generate")
+@app.post("/api/devices/qr/generate")
 async def generate_qr_token(cu: dict = Depends(get_current_user)):
     token = _secrets.token_urlsafe(32)
     expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat() + "Z"
     mdb_save_qr_token(token, {"user_id": cu["user_id"], "status": "pending", "created_at": datetime.utcnow().isoformat() + "Z", "expires_at": expires_at, "approved": False})
     return {"token": token, "expires_at": expires_at}
 
-@app.get("/devices/qr/{token}/status")
+@app.get("/api/devices/qr/{token}/status")
 async def qr_token_status(token: str):
     rec = mdb_get_qr_token(token)
     if not rec:
@@ -3340,7 +3340,7 @@ async def qr_token_status(token: str):
         raise HTTPException(status_code=410, detail="Token expired")
     return {"status": rec["status"], "approved": rec.get("approved", False)}
 
-@app.post("/devices/qr/{token}/scan")
+@app.post("/api/devices/qr/{token}/scan")
 async def scan_qr_token(token: str, request: Request):
     try:
         body = await request.json()
@@ -3361,7 +3361,7 @@ async def scan_qr_token(token: str, request: Request):
     await ws_manager.send(str(rec["user_id"]), {"type": "qr_link_request", "token": token, "device_name": device_name, "user_agent": body.get("user_agent", "")})
     return {"status": "scanned", "message": "Approval request sent to primary device"}
 
-@app.post("/devices/qr/{token}/approve")
+@app.post("/api/devices/qr/{token}/approve")
 async def approve_qr_token(token: str, cu: dict = Depends(get_current_user)):
     rec = mdb_get_qr_token(token)
     if not rec:
@@ -3410,7 +3410,7 @@ async def approve_qr_token(token: str, cu: dict = Depends(get_current_user)):
     await ws_manager.send(f"qr_{token}", {"type": "qr_approved", "token": new_jwt, "session_id": session_id, "user": token_data})
     return {"status": "approved"}
 
-@app.post("/devices/qr/{token}/reject")
+@app.post("/api/devices/qr/{token}/reject")
 async def reject_qr_token(token: str, cu: dict = Depends(get_current_user)):
     rec = mdb_get_qr_token(token)
     if not rec:
@@ -3422,7 +3422,7 @@ async def reject_qr_token(token: str, cu: dict = Depends(get_current_user)):
     await ws_manager.send(f"qr_{token}", {"type": "qr_rejected", "token": token})
     return {"status": "rejected"}
 
-@app.get("/devices/qr/{token}/await")
+@app.get("/api/devices/qr/{token}/await")
 async def await_qr_approval(token: str):
     for _ in range(30):
         rec = mdb_get_qr_token(token)
@@ -3437,13 +3437,13 @@ async def await_qr_approval(token: str):
         await asyncio.sleep(1)
     return {"status": "pending"}
 
-@app.get("/devices")
+@app.get("/api/devices")
 async def list_devices(cu: dict = Depends(get_current_user)):
     devices = mdb_get_devices(cu["user_id"])
     # Strip sensitive jwt_token before returning to client
     return [{k: v for k, v in d.items() if k != "jwt_token"} for d in devices]
 
-@app.delete("/devices/{device_id}")
+@app.delete("/api/devices/{device_id}")
 async def remove_device(device_id: str, cu: dict = Depends(get_current_user)):
     device = mdb_get_device(device_id, cu["user_id"])
     if not device:
@@ -3463,7 +3463,7 @@ async def remove_device(device_id: str, cu: dict = Depends(get_current_user)):
 
 # ── Login Sessions (all devices, not just QR-linked) ─────
 
-@app.get("/sessions")
+@app.get("/api/sessions")
 def list_sessions(cu: dict = Depends(get_current_user)):
     """Return all active login sessions for the current user."""
     sessions = mdb_get_sessions(cu["user_id"])
@@ -3486,7 +3486,7 @@ def list_sessions(cu: dict = Depends(get_current_user)):
     result.sort(key=lambda x: (not x["is_current"], x.get("last_seen", "") or ""), reverse=False)
     return result
 
-@app.delete("/sessions/{session_id}")
+@app.delete("/api/sessions/{session_id}")
 async def remove_session(session_id: str, cu: dict = Depends(get_current_user)):
     """Remove a login session and force-logout that device."""
     session = mdb_get_session(session_id, cu["user_id"])
@@ -3499,7 +3499,7 @@ async def remove_session(session_id: str, cu: dict = Depends(get_current_user)):
 
 # ── Smart Reply ───────────────────────────────────────────
 
-@app.post("/smart-reply")
+@app.post("/api/smart-reply")
 async def smart_reply(req: SmartReplyRequest, cu: dict = Depends(get_current_user)):
     msgs = req.messages or []
     last_bot, last_user = "", ""
