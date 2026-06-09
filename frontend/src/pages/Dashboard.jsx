@@ -959,14 +959,13 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
               console.log('[E2Ev2] Backup data received, length:', backup?.length)
               if (backup && backup.length > 10) {
                 // Server has a backup — show password modal to restore it
-                // BUT: Only ask ONCE per session! Check if already asked
-                const alreadyAsked = sessionStorage.getItem('e2e_password_modal_shown')
-                if (!alreadyAsked) {
+                // BUT: Only show if password NOT already provided in this session!
+                const pwAlreadyProvided = sessionStorage.getItem('e2e_pw')
+                if (!pwAlreadyProvided) {
                   console.log('[E2Ev2] ✅ Server backup found — showing password modal NOW')
                   setE2ePasswordNeeded(true)
-                  sessionStorage.setItem('e2e_password_modal_shown', '1') // Mark as asked
                 } else {
-                  console.log('[E2Ev2] Password modal already shown this session — not showing again')
+                  console.log('[E2Ev2] Password already provided this session — NOT showing modal again')
                 }
               } else {
                 // No backup on server — first login on any device, generate fresh key
@@ -974,21 +973,20 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                 const pw = sessionStorage.getItem('e2e_pw') || null
                 const isGoogle = localStorage.getItem('google_auth') === 'true'
                 if (pw) {
-                  // Password user or Google user with password in session
+                  // Password user or Google user with password in session — DON'T show modal!
+                  console.log('[E2Ev2] Password already in session — NOT showing modal')
                   setupMasterKeyAfterLogin({ userId: uid_str, password: pw, token: tok, apiUrl })
                     .then(kp => {
                       if (kp) { v2PrivKeyRef.current = kp.privateKey; v2PubKeyRef.current = kp.publicKey }
                     }).catch(() => {})
                 } else if (isGoogle) {
-                  // Google user with no password in session — ask them for password to set up keys
-                  // BUT: Only ask ONCE per session!
-                  const alreadyAsked = sessionStorage.getItem('e2e_password_modal_shown')
-                  if (!alreadyAsked) {
+                  // Google user with no password in session — ask them for password ONCE
+                  const pwAlreadyProvided = sessionStorage.getItem('e2e_pw')
+                  if (!pwAlreadyProvided) {
                     console.log('[E2Ev2] ✅ Google user with no backup — showing password modal NOW')
                     setE2ePasswordNeeded(true)
-                    sessionStorage.setItem('e2e_password_modal_shown', '1') // Mark as asked
                   } else {
-                    console.log('[E2Ev2] Password modal already shown this session — not showing again')
+                    console.log('[E2Ev2] Password already provided this session — NOT showing modal again')
                   }
                 }
               }
