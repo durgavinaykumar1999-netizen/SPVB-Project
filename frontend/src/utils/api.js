@@ -6,8 +6,12 @@ const BACKEND = import.meta.env.VITE_BACKEND_URL || ''
 export const LOCAL_MODE = localStorage.getItem('spvb_local_mode') === '1'
 
 export const apiUrl = (path) => {
-  const stripped = BACKEND ? path.replace(/^\/api/, '') : path
-  return `${BACKEND}${stripped}`
+  if (!BACKEND) return path
+
+  // If path starts with /api, use it as-is with BACKEND base
+  // BACKEND is already https://example.com (without /api)
+  // So /api/users/me → https://example.com/api/users/me
+  return `${BACKEND}${path}`
 }
 
 export const wsUrl = (path) => {
