@@ -73,7 +73,8 @@ function QRPanel({ onLogin }) {
       ws.onmessage = async (ev) => {
         try {
           const msg = JSON.parse(ev.data)
-          console.log('[QRPanel] WebSocket message:', msg.type, msg)
+          console.log('🔍 [QRPanel] WebSocket message received:', msg.type, '| Version: 2026-06-09-Fix-v3')
+          console.log('[QRPanel] Message object:', msg)
 
           if (msg.type === 'qr_approved') {
             clearInterval(timerRef.current)
