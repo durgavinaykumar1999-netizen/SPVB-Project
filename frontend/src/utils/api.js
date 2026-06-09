@@ -1,17 +1,22 @@
-const BACKEND = import.meta.env.VITE_BACKEND_URL || ''
+// Try to get backend URL from environment, fallback to production backend
+const BACKEND = import.meta.env.VITE_BACKEND_URL || 'https://spvb-backend.onrender.com'
 
 // Local mode: bypass server, store all data in IndexedDB (for E2E V2 testing)
 // Enable:  localStorage.setItem('spvb_local_mode', '1')
 // Disable: localStorage.removeItem('spvb_local_mode')
 export const LOCAL_MODE = localStorage.getItem('spvb_local_mode') === '1'
 
-export const apiUrl = (path) => {
-  if (!BACKEND) return path
+// Debug: Log backend URL once on page load
+if (typeof window !== 'undefined' && !window.__spvb_api_logged) {
+  window.__spvb_api_logged = true
+  console.log('[API] Backend URL:', BACKEND)
+}
 
-  // If path starts with /api, use it as-is with BACKEND base
-  // BACKEND is already https://example.com (without /api)
-  // So /api/users/me → https://example.com/api/users/me
-  return `${BACKEND}${path}`
+export const apiUrl = (path) => {
+  // Build full URL
+  const fullUrl = `${BACKEND}${path}`
+  console.log(`[API] ${path} → ${fullUrl}`)
+  return fullUrl
 }
 
 export const wsUrl = (path) => {
