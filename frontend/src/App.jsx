@@ -44,9 +44,18 @@ function App() {
   const { locked, unlock, bioSupported, bioRegistered, setBioRegistered, lockReady } = useAppLock(user)
 
   const onLogin = useCallback(() => {
+    console.log('[App] onLogin called - reading token from localStorage')
     const t = localStorage.getItem('token')
+    console.log('[App] Token retrieved:', t ? t.slice(0, 20) + '...' : 'null')
     setToken((t && t !== 'null' && t !== 'undefined') ? t : null)
-    try { setUser(JSON.parse(localStorage.getItem('user') || 'null')) } catch {}
+    try {
+      const userStr = localStorage.getItem('user')
+      const user = JSON.parse(userStr || 'null')
+      console.log('[App] User retrieved:', user?.username || 'null')
+      setUser(user)
+    } catch (err) {
+      console.error('[App] Failed to parse user:', err)
+    }
   }, [])
 
   const onLogout = useCallback(() => {
@@ -66,8 +75,18 @@ function App() {
 
   useEffect(() => {
     const sync = () => {
-      setToken(localStorage.getItem('token'))
-      try { setUser(JSON.parse(localStorage.getItem('user') || 'null')) } catch {}
+      console.log('[App] Storage event detected - syncing token...')
+      const newToken = localStorage.getItem('token')
+      console.log('[App] New token from storage:', newToken ? newToken.slice(0, 20) + '...' : 'null')
+      setToken(newToken && newToken !== 'null' && newToken !== 'undefined' ? newToken : null)
+      try {
+        const userStr = localStorage.getItem('user')
+        const user = JSON.parse(userStr || 'null')
+        console.log('[App] User from storage:', user?.username || 'null')
+        setUser(user)
+      } catch (err) {
+        console.error('[App] Failed to parse user from storage:', err)
+      }
     }
     window.addEventListener('storage', sync)
     return () => window.removeEventListener('storage', sync)

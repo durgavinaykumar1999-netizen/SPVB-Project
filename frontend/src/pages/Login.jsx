@@ -73,24 +73,42 @@ function QRPanel({ onLogin }) {
       ws.onmessage = async (ev) => {
         try {
           const msg = JSON.parse(ev.data)
-          console.log('[QRPanel] WebSocket message:', msg.type)
+          console.log('[QRPanel] WebSocket message:', msg.type, msg)
 
           if (msg.type === 'qr_approved' && msg.token) {
             clearInterval(timerRef.current)
-            console.log('[QRPanel] QR approved, logging in...')
+            console.log('[QRPanel] QR approved! Token received:', msg.token.slice(0, 20) + '...')
 
+            // Store token immediately
             const success = setSecureToken(msg.token, msg.user, msg.session_id)
+            console.log('[QRPanel] Token stored:', success)
+
             if (!success) {
-              console.error('[QRPanel] Failed to store token securely')
+              console.error('[QRPanel] ❌ Failed to store token securely')
               setStatus('error')
               return
             }
 
+            console.log('[QRPanel] ✅ Token stored successfully')
+            console.log('[QRPanel] Setting status to "approved" and navigating...')
+
+            // Close WebSocket after successful approval
+            if (wsRef.current) {
+              wsRef.current.close()
+            }
+
+            // Set approved status - this triggers the navigation useEffect
             setStatus('approved')
-            // Navigate to dashboard — key restore happens there via password modal
-            // Do NOT call setupMasterKeyAfterLogin here without a password:
-            // it would generate a fresh wrong key, overwriting the correct backup
+
+            // Also call onLogin to update parent App state
+            console.log('[QRPanel] Calling onLogin callback...')
             onLogin?.()
+
+            // Force navigation after a small delay to ensure state updates
+            setTimeout(() => {
+              console.log('[QRPanel] Force navigating to dashboard...')
+              navigate('/dashboard')
+            }, 500)
           } else if (msg.type === 'qr_rejected') {
             console.log('[QRPanel] QR rejected by user')
             clearInterval(timerRef.current)
@@ -102,7 +120,7 @@ function QRPanel({ onLogin }) {
             setStatus('expired')
           }
         } catch (err) {
-          console.error('[QRPanel] Message parsing error:', err)
+          console.error('[QRPanel] ❌ Message parsing error:', err, ev.data)
         }
       }
 
