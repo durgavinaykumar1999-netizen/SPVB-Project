@@ -900,11 +900,39 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   // Load V2 RSA-OAEP master key pair from IndexedDB — with retry in case
   // setupMasterKeyAfterLogin is still running in the background on first load
   useEffect(() => {
-    if (!user?.id) return
-    const uid = String(user.id)
+    // Don't wait for user?.id — token is sufficient for auth after QR login
+    const tok = localStorage.getItem('token')
+    if (!tok) {
+      console.log('[E2Ev2] No token yet, waiting...')
+      return
+    }
+
+    console.log('[E2Ev2] ✅ Token available, starting password modal check...')
+
+    // Get user ID from user object OR extract from JWT token
+    let uid = user?.id
+    if (!uid && tok) {
+      try {
+        const parts = tok.split('.')
+        if (parts.length === 3) {
+          const payload = JSON.parse(atob(parts[1]))
+          uid = payload.user_id || payload.sub
+          if (uid) console.log('[E2Ev2] Extracted user ID from JWT:', uid)
+        }
+      } catch (err) {
+        console.warn('[E2Ev2] Could not extract UID from JWT:', err?.message)
+      }
+    }
+
+    if (!uid) {
+      console.warn('[E2Ev2] No user ID available, skipping...')
+      return
+    }
+
+    const uid_str = String(uid)
     const tryLoad = async (attemptsLeft) => {
       try {
-        const kp = await loadMasterKeyPair(uid)
+        const kp = await loadMasterKeyPair(uid_str)
         if (kp) {
           v2PrivKeyRef.current = kp.privateKey
           v2PubKeyRef.current  = kp.publicKey
@@ -940,7 +968,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                 const isGoogle = localStorage.getItem('google_auth') === 'true'
                 if (pw) {
                   // Password user or Google user with password in session
-                  setupMasterKeyAfterLogin({ userId: uid, password: pw, token: tok, apiUrl })
+                  setupMasterKeyAfterLogin({ userId: uid_str, password: pw, token: tok, apiUrl })
                     .then(kp => {
                       if (kp) { v2PrivKeyRef.current = kp.privateKey; v2PubKeyRef.current = kp.publicKey }
                     }).catch(() => {})
@@ -962,7 +990,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       }
     }
     tryLoad(6) // retry up to 6 times = ~5 seconds total
-  }, [user?.id])
+  }, []) // Empty dependency - runs once, relies on token from localStorage
 
   // Restore BOTH V1 ECDH + V2 RSA keys from backup using the user's password
   // OR setup new encryption password for Google users with no backup
