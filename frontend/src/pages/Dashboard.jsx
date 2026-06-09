@@ -959,8 +959,15 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
               console.log('[E2Ev2] Backup data received, length:', backup?.length)
               if (backup && backup.length > 10) {
                 // Server has a backup — show password modal to restore it
-                console.log('[E2Ev2] ✅ Server backup found — showing password modal NOW')
-                setE2ePasswordNeeded(true)
+                // BUT: Only ask ONCE per session! Check if already asked
+                const alreadyAsked = sessionStorage.getItem('e2e_password_modal_shown')
+                if (!alreadyAsked) {
+                  console.log('[E2Ev2] ✅ Server backup found — showing password modal NOW')
+                  setE2ePasswordNeeded(true)
+                  sessionStorage.setItem('e2e_password_modal_shown', '1') // Mark as asked
+                } else {
+                  console.log('[E2Ev2] Password modal already shown this session — not showing again')
+                }
               } else {
                 // No backup on server — first login on any device, generate fresh key
                 console.log('[E2Ev2] No server backup — generating fresh key')
@@ -974,8 +981,15 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                     }).catch(() => {})
                 } else if (isGoogle) {
                   // Google user with no password in session — ask them for password to set up keys
-                  console.log('[E2Ev2] ✅ Google user with no backup — showing password modal NOW')
-                  setE2ePasswordNeeded(true)
+                  // BUT: Only ask ONCE per session!
+                  const alreadyAsked = sessionStorage.getItem('e2e_password_modal_shown')
+                  if (!alreadyAsked) {
+                    console.log('[E2Ev2] ✅ Google user with no backup — showing password modal NOW')
+                    setE2ePasswordNeeded(true)
+                    sessionStorage.setItem('e2e_password_modal_shown', '1') // Mark as asked
+                  } else {
+                    console.log('[E2Ev2] Password modal already shown this session — not showing again')
+                  }
                 }
               }
             } else {
