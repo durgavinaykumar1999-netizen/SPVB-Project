@@ -25,9 +25,10 @@ self.addEventListener('fetch', e => {
     fetch(request)
       .then(res => {
         // Clone synchronously before any async operation — body can only be read once
-        if (res.ok) {
+        // Only cache 200-299 responses (not 206 Partial Content)
+        if (res.ok && res.status >= 200 && res.status < 300) {
           const clone = res.clone()
-          caches.open(CACHE).then(c => c.put(request, clone))
+          caches.open(CACHE).then(c => c.put(request, clone)).catch(() => {})
         }
         return res
       })

@@ -8605,10 +8605,10 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
             )}
 
             {passwordValidated && (
-              <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#25d366', animation: 'pulse 1.5s infinite' }} />
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#25d366', animation: 'pulse 1.5s infinite 0.3s' }} />
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#25d366', animation: 'pulse 1.5s infinite 0.6s' }} />
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 8 }}>
+                <span style={{ fontSize: 12, color: '#25d366' }}>●</span>
+                <span style={{ fontSize: 12, color: '#25d366' }}>●</span>
+                <span style={{ fontSize: 12, color: '#25d366' }}>●</span>
               </div>
             )}
 
@@ -8624,20 +8624,10 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.9)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 24 }}>
           <div style={{ fontSize: 60 }}>🔓</div>
           <div style={{ fontSize: 18, color: '#f1f5f9', fontWeight: 600 }}>Decrypting Messages</div>
-          <div style={{ width: 40, height: 40, border: '4px solid rgba(255,255,255,0.2)', borderTopColor: '#25d366', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+          <div style={{ fontSize: 24, color: '#25d366' }}>⟳</div>
           <div style={{ fontSize: 13, color: '#94a3b8' }}>Loading your messages...</div>
         </div>
       )}
-
-      <style>{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-        @keyframes pulse {
-          0%, 100% { opacity: 0.3; }
-          50% { opacity: 1; }
-        }
-      `}</style>
     </div>
   )
 }
