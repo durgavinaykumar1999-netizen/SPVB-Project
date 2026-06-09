@@ -925,11 +925,13 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
             const res = await fetch(apiUrl('/api/users/me/key-backup-v2'), {
               headers: { Authorization: `Bearer ${tok}` }
             })
+            console.log('[E2Ev2] Backup check response status:', res.status)
             if (res.ok) {
               const { backup } = await res.json()
+              console.log('[E2Ev2] Backup data received, length:', backup?.length)
               if (backup && backup.length > 10) {
                 // Server has a backup — show password modal to restore it
-                console.log('[E2Ev2] Server backup found — showing restore modal')
+                console.log('[E2Ev2] ✅ Server backup found — showing password modal NOW')
                 setE2ePasswordNeeded(true)
               } else {
                 // No backup on server — first login on any device, generate fresh key
@@ -944,10 +946,12 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                     }).catch(() => {})
                 } else if (isGoogle) {
                   // Google user with no password in session — ask them for password to set up keys
-                  console.log('[E2Ev2] Google user with no backup — asking for password to set up encryption')
+                  console.log('[E2Ev2] ✅ Google user with no backup — showing password modal NOW')
                   setE2ePasswordNeeded(true)
                 }
               }
+            } else {
+              console.warn('[E2Ev2] Backup check failed with status:', res.status)
             }
           } catch (err) {
             console.warn('[E2Ev2] Backup check failed:', err?.message)
