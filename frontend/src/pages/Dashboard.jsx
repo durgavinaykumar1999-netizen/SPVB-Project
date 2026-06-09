@@ -957,34 +957,47 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
             if (res.ok) {
               const { backup } = await res.json()
               console.log('[E2Ev2] Backup data received, length:', backup?.length)
-              // ⚠️ SECURITY: Auto-restore from backup using stored password
-              // NO modal - just use password silently
+              // ⚠️ LOGIC: Show modal ONLY for QR/Google login, NOT for direct password login
               const pw = sessionStorage.getItem('e2e_pw')
+              const directPasswordLogin = pw // User logged in with username/password
+              const isQrOrGoogleLogin = !pw // User logged in with QR or Google (no password)
+
               if (backup && backup.length > 10) {
-                // Server has backup - restore it with password (silent, no modal)
-                console.log('[E2Ev2] ✅ Server backup found - restoring silently with stored password')
-                if (pw) {
+                // Server has backup
+                if (directPasswordLogin) {
+                  // Direct password login: restore silently, NO modal
+                  console.log('[E2Ev2] ✅ Direct password login - restoring backup silently')
                   setupMasterKeyAfterLogin({ userId: uid_str, password: pw, token: tok, apiUrl })
                     .then(kp => {
                       if (kp) { v2PrivKeyRef.current = kp.privateKey; v2PubKeyRef.current = kp.publicKey }
-                      console.log('[E2Ev2] ✅ Backup restored silently - no modal shown')
                     }).catch(err => {
                       console.error('[E2Ev2] Backup restore failed:', err?.message)
                     })
+                } else if (isQrOrGoogleLogin) {
+                  // QR/Google login: show modal ONCE to verify password
+                  const alreadyAsked = sessionStorage.getItem('e2e_password_validation_shown')
+                  if (!alreadyAsked) {
+                    console.log('[E2Ev2] ✅ QR/Google login - showing password validation modal ONCE')
+                    setE2ePasswordNeeded(true)
+                  }
                 }
               } else {
-                // No backup - generate fresh key silently
-                console.log('[E2Ev2] No backup - generating fresh key silently')
-                if (pw) {
-                  console.log('[E2Ev2] Using password from login - no modal needed')
+                // No backup
+                if (directPasswordLogin) {
+                  console.log('[E2Ev2] Direct password login - no modal')
                   setupMasterKeyAfterLogin({ userId: uid_str, password: pw, token: tok, apiUrl })
                     .then(kp => {
                       if (kp) { v2PrivKeyRef.current = kp.privateKey; v2PubKeyRef.current = kp.publicKey }
                     }).catch(() => {})
+                } else if (isQrOrGoogleLogin) {
+                  // QR/Google login with no backup: show modal once
+                  const alreadyAsked = sessionStorage.getItem('e2e_password_validation_shown')
+                  if (!alreadyAsked) {
+                    console.log('[E2Ev2] QR/Google login, no backup - showing password validation modal')
+                    setE2ePasswordNeeded(true)
+                  }
                 }
               }
-              // ⚠️ NEVER show password modal - use silent restore
-              setE2ePasswordNeeded(false)
             } else {
               console.warn('[E2Ev2] Backup check failed with status:', res.status)
             }
@@ -1058,6 +1071,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       contactPubKeysRef.current = {}
       localStorage.setItem(`e2e_ready_${uid}`, '1')
       sessionStorage.setItem('e2e_pw', password)
+      sessionStorage.setItem('e2e_password_validation_shown', '1') // Mark validation complete - don't show modal again
       setE2ePasswordNeeded(false)
       setE2ePasswordInput('')
       e2eBackupRef.current = null
@@ -8523,7 +8537,44 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       )}
 
       {/* ── E2E Key Restore Modal — shown after QR/new device login or for Google users ── */}
-      {/* Encryption Password Modal - REMOVED for silent background restore */}
+      {/* Encryption Password Modal - Show ONLY once for QR/Google login */}
+      {e2ePasswordNeeded && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <div style={{ background: '#1e293b', borderRadius: 16, padding: 32, width: '100%', maxWidth: 380, boxShadow: '0 24px 60px rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
+            <div style={{ textAlign: 'center', marginBottom: 20 }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>🔐</div>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>Verify Password</h2>
+              <p style={{ margin: '8px 0 0', fontSize: 13, color: '#94a3b8', lineHeight: 1.5 }}>
+                Enter your password to unlock messages on this device.
+              </p>
+            </div>
+            <input
+              type="password"
+              placeholder="Your account password"
+              value={e2ePasswordInput}
+              onChange={e => setE2ePasswordInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !e2ePasswordLoading && restoreE2eKeyWithPassword(e2ePasswordInput)}
+              autoFocus
+              style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: `1px solid ${e2ePasswordError ? '#ef4444' : 'rgba(255,255,255,0.1)'}`, background: 'rgba(255,255,255,0.05)', color: '#f1f5f9', fontSize: 15, outline: 'none', boxSizing: 'border-box', marginBottom: 8 }}
+            />
+            {e2ePasswordError && (
+              <p style={{ margin: '0 0 12px', fontSize: 12, color: '#ef4444' }}>{e2ePasswordError}</p>
+            )}
+            <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+              <button
+                onClick={() => restoreE2eKeyWithPassword(e2ePasswordInput)}
+                disabled={!e2ePasswordInput || e2ePasswordLoading}
+                style={{ flex: 1, padding: '11px', borderRadius: 10, border: 'none', background: e2ePasswordInput && !e2ePasswordLoading ? '#25d366' : '#334155', color: 'white', cursor: e2ePasswordInput && !e2ePasswordLoading ? 'pointer' : 'default', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', transition: 'background 0.2s' }}
+              >
+                {e2ePasswordLoading ? 'Verifying…' : 'Verify'}
+              </button>
+            </div>
+            <p style={{ margin: '14px 0 0', fontSize: 11, color: '#475569', textAlign: 'center' }}>
+              Password verified once per session.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
