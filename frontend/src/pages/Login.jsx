@@ -65,21 +65,57 @@ function QRPanel({ onLogin }) {
       // WS for real-time approval
       const ws = new WebSocket(wsUrl(`/ws/qr/${tok}`))
       wsRef.current = ws
+
+      ws.onopen = () => {
+        console.log('[QRPanel] WebSocket connected for token:', tok.slice(0, 8) + '...')
+      }
+
       ws.onmessage = async (ev) => {
         try {
           const msg = JSON.parse(ev.data)
+          console.log('[QRPanel] WebSocket message:', msg.type)
+
           if (msg.type === 'qr_approved' && msg.token) {
             clearInterval(timerRef.current)
-            setSecureToken(msg.token, msg.user, msg.session_id)
+            console.log('[QRPanel] QR approved, logging in...')
+
+            const success = setSecureToken(msg.token, msg.user, msg.session_id)
+            if (!success) {
+              console.error('[QRPanel] Failed to store token securely')
+              setStatus('error')
+              return
+            }
+
             setStatus('approved')
             // Navigate to dashboard — key restore happens there via password modal
             // Do NOT call setupMasterKeyAfterLogin here without a password:
             // it would generate a fresh wrong key, overwriting the correct backup
             onLogin?.()
+          } else if (msg.type === 'qr_rejected') {
+            console.log('[QRPanel] QR rejected by user')
+            clearInterval(timerRef.current)
+            setStatus('error')
+            // Don't close WS - let it timeout naturally
+          } else if (msg.type === 'qr_expired') {
+            console.log('[QRPanel] QR expired')
+            clearInterval(timerRef.current)
+            setStatus('expired')
           }
-        } catch {}
+        } catch (err) {
+          console.error('[QRPanel] Message parsing error:', err)
+        }
       }
-      ws.onerror = () => {}
+
+      ws.onerror = (err) => {
+        console.error('[QRPanel] WebSocket error:', err)
+        clearInterval(timerRef.current)
+        // Connection errors are retried with new QR
+      }
+
+      ws.onclose = () => {
+        console.log('[QRPanel] WebSocket closed')
+        clearInterval(timerRef.current)
+      }
     } catch {
       setStatus('expired')
     }

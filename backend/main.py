@@ -3376,10 +3376,38 @@ async def approve_qr_token(token: str, cu: dict = Depends(get_current_user)):
     token_data = {"user_id": user["id"], "username": user["username"], "email": user["email"], "role": user.get("role", "user"), "display_name": user.get("display_name", user["username"]), "avatar_url": user.get("avatar_url", "")}
     new_jwt = create_jwt_token(token_data)
     device_id = _secrets.token_urlsafe(16)
-    mdb_save_device({"id": device_id, "user_id": user["id"], "device_name": rec.get("scanner_device", "Linked Device"), "user_agent": rec.get("scanner_user_agent", ""), "linked_at": datetime.utcnow().isoformat() + "Z"})
-    rec.update({"status": "approved", "approved": True, "jwt": new_jwt})
+    session_id = str(_uuid.uuid4())
+    # Save device and session
+    mdb_save_device({
+        "id": device_id,
+        "user_id": user["id"],
+        "device_name": rec.get("scanner_device", "Linked Device"),
+        "user_agent": rec.get("scanner_user_agent", ""),
+        "jwt_token": new_jwt,
+        "linked_at": datetime.utcnow().isoformat() + "Z"
+    })
+    # Save session for unified sessions list
+    try:
+        dev = _parse_device_info(rec.get("scanner_user_agent", ""))
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        mdb_save_session({
+            "id": session_id,
+            "user_id": user["id"],
+            "device_name": dev["device_name"],
+            "device_type": dev["device_type"],
+            "os": dev["os"],
+            "browser": dev["browser"],
+            "login_method": "qr",
+            "created_at": now_iso,
+            "last_seen": now_iso
+        })
+    except:
+        pass
+
+    rec.update({"status": "approved", "approved": True, "jwt": new_jwt, "session_id": session_id})
     mdb_save_qr_token(token, {k: v for k, v in rec.items() if k != "token"})
-    await ws_manager.send(f"qr_{token}", {"type": "qr_approved", "token": token, "jwt": new_jwt, "user": token_data})
+    # Send JWT token (not QR token) for frontend login
+    await ws_manager.send(f"qr_{token}", {"type": "qr_approved", "token": new_jwt, "session_id": session_id, "user": token_data})
     return {"status": "approved"}
 
 @app.post("/devices/qr/{token}/reject")
