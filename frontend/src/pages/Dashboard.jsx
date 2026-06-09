@@ -957,39 +957,34 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
             if (res.ok) {
               const { backup } = await res.json()
               console.log('[E2Ev2] Backup data received, length:', backup?.length)
+              // ⚠️ SECURITY: Auto-restore from backup using stored password
+              // NO modal - just use password silently
+              const pw = sessionStorage.getItem('e2e_pw')
               if (backup && backup.length > 10) {
-                // Server has a backup — show password modal to restore it
-                // BUT: Only show if password NOT already provided in this session!
-                const pwAlreadyProvided = sessionStorage.getItem('e2e_pw')
-                if (!pwAlreadyProvided) {
-                  console.log('[E2Ev2] ✅ Server backup found — showing password modal NOW')
-                  setE2ePasswordNeeded(true)
-                } else {
-                  console.log('[E2Ev2] Password already provided this session — NOT showing modal again')
+                // Server has backup - restore it with password (silent, no modal)
+                console.log('[E2Ev2] ✅ Server backup found - restoring silently with stored password')
+                if (pw) {
+                  setupMasterKeyAfterLogin({ userId: uid_str, password: pw, token: tok, apiUrl })
+                    .then(kp => {
+                      if (kp) { v2PrivKeyRef.current = kp.privateKey; v2PubKeyRef.current = kp.publicKey }
+                      console.log('[E2Ev2] ✅ Backup restored silently - no modal shown')
+                    }).catch(err => {
+                      console.error('[E2Ev2] Backup restore failed:', err?.message)
+                    })
                 }
               } else {
-                // No backup on server — first login on any device, generate fresh key
-                console.log('[E2Ev2] No server backup — generating fresh key')
-                const pw = sessionStorage.getItem('e2e_pw') || null
-                const isGoogle = localStorage.getItem('google_auth') === 'true'
+                // No backup - generate fresh key silently
+                console.log('[E2Ev2] No backup - generating fresh key silently')
                 if (pw) {
-                  // Password user or Google user with password in session — DON'T show modal!
-                  console.log('[E2Ev2] Password already in session — NOT showing modal')
+                  console.log('[E2Ev2] Using password from login - no modal needed')
                   setupMasterKeyAfterLogin({ userId: uid_str, password: pw, token: tok, apiUrl })
                     .then(kp => {
                       if (kp) { v2PrivKeyRef.current = kp.privateKey; v2PubKeyRef.current = kp.publicKey }
                     }).catch(() => {})
-                } else if (isGoogle) {
-                  // Google user with no password in session — ask them for password ONCE
-                  const pwAlreadyProvided = sessionStorage.getItem('e2e_pw')
-                  if (!pwAlreadyProvided) {
-                    console.log('[E2Ev2] ✅ Google user with no backup — showing password modal NOW')
-                    setE2ePasswordNeeded(true)
-                  } else {
-                    console.log('[E2Ev2] Password already provided this session — NOT showing modal again')
-                  }
                 }
               }
+              // ⚠️ NEVER show password modal - use silent restore
+              setE2ePasswordNeeded(false)
             } else {
               console.warn('[E2Ev2] Backup check failed with status:', res.status)
             }
