@@ -244,6 +244,7 @@ export async function decryptMessageWithWrappedKey(content, wrappedKeyB64, myPri
     return new TextDecoder().decode(plain)
   } catch (err) {
     console.error('[E2Ev2] decrypt failed:', err?.message)
+    console.warn('[E2Ev2] V2 key unavailable - content returned encrypted')
     return content
   }
 }
