@@ -92,6 +92,7 @@ function QRPanel({ onLogin }) {
 
             // Store token immediately
             const success = setSecureToken(jwtToken, msg.user, msg.session_id)
+            localStorage.setItem('e2e_login_type', 'qr') // Mark as QR login - show modal once
             console.log('[QRPanel] Token stored:', success)
 
             if (!success) {
@@ -294,6 +295,7 @@ function LoginForm({ onLogin }) {
       if (!res.ok) throw new Error(parseError(data.detail) || 'Google sign-in failed')
       if (!data.token) throw new Error('Sign-in failed: no token received')
       setSecureToken(data.token, data.user, data.session_id)
+      localStorage.setItem('e2e_login_type', 'google') // Mark as Google login - show modal once
       localStorage.setItem('google_auth', 'true')
       if (data.is_new_user || data.needs_setup) {
         await new Promise(resolve => { requestAllGooglePermissions(GOOGLE_CLIENT_ID, resolve) })
@@ -323,6 +325,7 @@ function LoginForm({ onLogin }) {
       if (!data.token) throw new Error('Login failed: no token received')
       setSecureToken(data.token, data.user, data.session_id)
       sessionStorage.setItem('e2e_pw', form.password)
+      localStorage.setItem('e2e_login_type', 'password') // Mark as password login - never show modal
       // Setup V2 RSA-OAEP master key — AWAIT before navigating so key is in IndexedDB when Dashboard loads
       try {
         await setupMasterKeyAfterLogin({ userId: data.user?.id, password: form.password, token: data.token, apiUrl })

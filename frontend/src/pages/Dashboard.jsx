@@ -307,6 +307,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   const [e2ePasswordLoading, setE2ePasswordLoading] = useState(false)
   const [passwordValidated, setPasswordValidated] = useState(false) // Track if password was validated (show checkmark)
   const [decryptingMessages, setDecryptingMessages] = useState(false) // Track if messages are being decrypted
+  const [decryptProgress, setDecryptProgress] = useState(0) // 0-100 percent for decryption overlay
   const e2eBackupRef = useRef(null) // cached backup blob when password prompt is shown
 
   /* ── Typing indicators ── */
@@ -775,25 +776,32 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
             await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
             console.log('[E2E] Pubkey uploaded ✅')
           } else if (serverX !== localX) {
-            // Mismatch — check if server has a backup before overwriting
-            // If backup exists, local key is WRONG (QR device with fresh key)
-            // → show restore modal instead of overwriting server's correct key
             console.warn(`[E2E] Pubkey MISMATCH — server-x=${serverX?.slice(0,8)}… local-x=${localX?.slice(0,8)}…`)
-            try {
-              const bkRes = await fetch(apiUrl('/api/users/me/key-backup-v2'), { headers: { Authorization: `Bearer ${token}` } })
-              const bkData = bkRes.ok ? await bkRes.json() : {}
-              if (bkData.backup && bkData.backup.length > 10) {
-                // Server has a backup → local key is wrong → restore from backup
-                console.warn('[E2E] Server has backup — local key is wrong. Showing restore modal.')
-                setE2ePasswordNeeded(true)
-              } else {
-                // No backup → local is authoritative → upload it
-                await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
-                console.log('[E2E] Pubkey re-synced ✅')
-              }
-            } catch {
-              // Fallback: re-upload local key
+            const loginTypeNow = localStorage.getItem('e2e_login_type')
+            // Default (unset/legacy sessions) → treat as password login: never show modal
+            if (loginTypeNow !== 'qr' && loginTypeNow !== 'google') {
+              // Phone/password login: never show modal or probe backup again —
+              // local key (derived from the login password) is authoritative.
               await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
+              console.log('[E2E] Pubkey re-synced (password login) ✅')
+            } else {
+              // QR/Google login: check if server has a backup before overwriting
+              try {
+                const bkRes = await fetch(apiUrl('/api/users/me/key-backup-v2'), { headers: { Authorization: `Bearer ${token}` } })
+                const bkData = bkRes.ok ? await bkRes.json() : {}
+                if (bkData.backup && bkData.backup.length > 10) {
+                  const alreadyAsked = localStorage.getItem('e2e_password_validation_shown')
+                  if (!alreadyAsked) {
+                    console.warn('[E2E] Server has backup — local key is wrong. Showing restore modal.')
+                    setE2ePasswordNeeded(true)
+                  }
+                } else {
+                  await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
+                  console.log('[E2E] Pubkey re-synced ✅')
+                }
+              } catch {
+                await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
+              }
             }
           } else {
             console.log(`[E2E] Server pubkey matches ✅ x=${serverX?.slice(0,8)}…`)
@@ -829,10 +837,11 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
 
   // Decrypt all already-loaded messages that still contain raw cipher text.
   // Handles both V2 (RSA-OAEP wrapped key) and V1 (ECDH shared key) messages.
-  const decryptAllPending = async (privKey) => {
+  // onProgress(done, total) — optional callback for progress UI (0..total)
+  const decryptAllPending = async (privKey, onProgress) => {
     const key = privKey || e2ePrivKeyRef.current
     const v2Priv = v2PrivKeyRef.current
-    if (!key && !v2Priv) return
+    if (!key && !v2Priv) { onProgress?.(0, 0); return }
     const snapshot = liveMessagesRef.current
     const myId = user?.id
 
@@ -843,7 +852,15 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
         return t.startsWith('__e2e__|') || t.startsWith('__e2ev2__|') || m._encrypted
       })
     )
-    if (encryptedContacts.length === 0) return
+    if (encryptedContacts.length === 0) { onProgress?.(0, 0); return }
+
+    // Total encrypted message count, used to report percentage progress
+    const totalEncrypted = encryptedContacts.reduce((sum, [, msgs]) => sum + msgs.filter(m => {
+      const t = String(m.text || '')
+      return t.startsWith('__e2e__|') || t.startsWith('__e2ev2__|') || m._encrypted
+    }).length, 0)
+    let doneCount = 0
+    onProgress?.(doneCount, totalEncrypted)
 
     try {
       // Fetch ALL contact public keys IN PARALLEL
@@ -869,9 +886,11 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
             // Code disabled for now
           }
           // V1: ECDH shared key fallback
-          if (!key || !pub) return m
+          if (!key || !pub) { doneCount++; onProgress?.(doneCount, totalEncrypted); return m }
           const plain = await decryptMessage(m.text, key, pub)
           const stillCipher = String(plain || '').startsWith('__e2e')
+          doneCount++
+          onProgress?.(doneCount, totalEncrypted)
           return { ...m, text: plain, _encrypted: stillCipher }
         }))
         setLiveMessages(prev => {
@@ -903,6 +922,9 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       console.log('[E2Ev2] No token yet, waiting...')
       return
     }
+
+    // Capture once — the V1 effect clears 'e2e_pw' from sessionStorage after first use
+    const loginPw = sessionStorage.getItem('e2e_pw')
 
     console.log('[E2Ev2] ✅ Token available, starting password modal check...')
 
@@ -939,6 +961,29 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           setTimeout(() => decryptAllPending(privKey), 300)
           return
         }
+        const loginType = localStorage.getItem('e2e_login_type') // 'password' | 'qr' | 'google'
+        // Default (unset/legacy sessions) → treat as password login: never show modal
+        const directPasswordLogin = loginType !== 'qr' && loginType !== 'google'
+
+        // Direct phone/password login: NEVER show modal, NEVER probe backup separately.
+        // setupMasterKeyAfterLogin already (1) checks IndexedDB, (2) restores from
+        // backup using the login password if needed, (3) generates fresh keys as
+        // last resort — all in ONE call, ONE possible backup fetch.
+        if (directPasswordLogin) {
+          console.log('[E2Ev2] Password login — setting up master key silently (no modal)')
+          try {
+            const kp2 = await setupMasterKeyAfterLogin({ userId: uid_str, password: loginPw || null, token: tok, apiUrl })
+            if (kp2) {
+              v2PrivKeyRef.current = kp2.privateKey
+              v2PubKeyRef.current  = kp2.publicKey
+              setTimeout(() => decryptAllPending(e2ePrivKeyRef.current), 300)
+            }
+          } catch (err) {
+            console.error('[E2Ev2] setupMasterKeyAfterLogin failed:', err?.message)
+          }
+          return
+        }
+
         if (attemptsLeft > 0) {
           // Key not ready yet — setupMasterKeyAfterLogin may still be running
           setTimeout(() => tryLoad(attemptsLeft - 1), 800)
@@ -946,54 +991,18 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           // RSA key not in IndexedDB — check if server has a backup to restore
           console.warn('[E2Ev2] Master key not found — checking server for backup...')
           try {
-            const tok = localStorage.getItem('token')
             const res = await fetch(apiUrl('/api/users/me/key-backup-v2'), {
               headers: { Authorization: `Bearer ${tok}` }
             })
             console.log('[E2Ev2] Backup check response status:', res.status)
             if (res.ok) {
-              const { backup } = await res.json()
-              console.log('[E2Ev2] Backup data received, length:', backup?.length)
-              // ⚠️ LOGIC: Show modal ONLY for QR/Google login, NOT for direct password login
-              const pw = sessionStorage.getItem('e2e_pw')
-              const directPasswordLogin = pw // User logged in with username/password
-              const isQrOrGoogleLogin = !pw // User logged in with QR or Google (no password)
-
-              if (backup && backup.length > 10) {
-                // Server has backup
-                if (directPasswordLogin) {
-                  // Direct password login: restore silently, NO modal
-                  console.log('[E2Ev2] ✅ Direct password login - restoring backup silently')
-                  setupMasterKeyAfterLogin({ userId: uid_str, password: pw, token: tok, apiUrl })
-                    .then(kp => {
-                      if (kp) { v2PrivKeyRef.current = kp.privateKey; v2PubKeyRef.current = kp.publicKey }
-                    }).catch(err => {
-                      console.error('[E2Ev2] Backup restore failed:', err?.message)
-                    })
-                } else if (isQrOrGoogleLogin) {
-                  // QR/Google login: show modal ONCE to verify password
-                  const alreadyAsked = sessionStorage.getItem('e2e_password_validation_shown')
-                  if (!alreadyAsked) {
-                    console.log('[E2Ev2] ✅ QR/Google login - showing password validation modal ONCE')
-                    setE2ePasswordNeeded(true)
-                  }
-                }
+              // QR/Google login: show modal ONCE per session to verify/setup password
+              const alreadyAsked = localStorage.getItem('e2e_password_validation_shown')
+              if (!alreadyAsked) {
+                console.log('[E2Ev2] ✅ QR/Google login - showing password validation modal ONCE')
+                setE2ePasswordNeeded(true)
               } else {
-                // No backup
-                if (directPasswordLogin) {
-                  console.log('[E2Ev2] Direct password login - no modal')
-                  setupMasterKeyAfterLogin({ userId: uid_str, password: pw, token: tok, apiUrl })
-                    .then(kp => {
-                      if (kp) { v2PrivKeyRef.current = kp.privateKey; v2PubKeyRef.current = kp.publicKey }
-                    }).catch(() => {})
-                } else if (isQrOrGoogleLogin) {
-                  // QR/Google login with no backup: show modal once
-                  const alreadyAsked = sessionStorage.getItem('e2e_password_validation_shown')
-                  if (!alreadyAsked) {
-                    console.log('[E2Ev2] QR/Google login, no backup - showing password validation modal')
-                    setE2ePasswordNeeded(true)
-                  }
-                }
+                console.log('[E2Ev2] Password already validated in this session')
               }
             } else {
               console.warn('[E2Ev2] Backup check failed with status:', res.status)
@@ -1068,40 +1077,50 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       contactPubKeysRef.current = {}
       localStorage.setItem(`e2e_ready_${uid}`, '1')
       sessionStorage.setItem('e2e_pw', password)
-      sessionStorage.setItem('e2e_password_validation_shown', '1') // Mark validation complete - don't show modal again
+      localStorage.setItem('e2e_password_validation_shown', '1') // Mark validation complete - persist across refreshes
 
       // Show checkmark for 1 second, then start message decryption
       setPasswordValidated(true)
       console.log('[PASSWORD] ✅ Password validated - showing checkmark')
 
+      // PROPER SEQUENCE:
+      // 1. Show checkmark (1.5s)
+      // 2. Show full-screen loading
+      // 3. Decrypt ALL messages COMPLETELY
+      // 4. Then show dashboard
+
       setTimeout(() => {
         setE2ePasswordNeeded(false)
         setE2ePasswordInput('')
-        setDecryptingMessages(true) // Start full screen loading
-        console.log('[DECRYPT] Starting message decryption...')
+        setPasswordValidated(false)
+        setDecryptProgress(0)
+        setDecryptingMessages(true) // Full screen loading NOW
+        console.log('[DECRYPT] 🔓 Starting FULL message decryption...')
 
-        // Trigger decryption immediately
-        const v1Key = e2ePrivKeyRef.current
-        if (v1Key) {
-          setTimeout(() => {
-            decryptAllPending(v1Key)
+        // ONLY ONE decryption pass - wait 500ms for UI to render, then decrypt everything
+        setTimeout(async () => {
+          const v1Key = e2ePrivKeyRef.current
+          if (v1Key) {
+            console.log('[DECRYPT] Decrypting all pending messages...')
+            await decryptAllPending(v1Key, (done, total) => {
+              setDecryptProgress(total > 0 ? Math.round((done / total) * 100) : 100)
+            })
+            console.log('[DECRYPT] ✅ ALL messages decrypted - showing dashboard')
+            setDecryptProgress(100)
+
+            // Wait 1s for UI update, then close loading
             setTimeout(() => {
-              setDecryptingMessages(false) // Decryption complete
-              setPasswordValidated(false)
-              console.log('[DECRYPT] ✅ Messages decrypted - showing dashboard')
-            }, 2000)
-          }, 500)
-        }
+              setDecryptingMessages(false)
+              console.log('[DECRYPT] 📊 Dashboard ready')
+            }, 1000)
+          } else {
+            console.warn('[DECRYPT] No V1 key available')
+            setDecryptingMessages(false)
+          }
+        }, 500)
       }, 1500) // Show checkmark for 1.5 seconds
 
       e2eBackupRef.current = null
-
-      // Trigger decryption with both keys now available
-      const v1Key = e2ePrivKeyRef.current
-      setTimeout(() => decryptAllPending(v1Key), 0)
-      setTimeout(() => decryptAllPending(v1Key), 1500)
-      setTimeout(() => decryptAllPending(v1Key), 4000)
-      setTimeout(() => decryptAllPending(v1Key), 8000)
     } catch (err) {
       console.warn('[E2Ev2] Restore failed:', err?.message)
       setE2ePasswordError(err.message || 'Failed to setup encryption. Please try again.')
@@ -3076,6 +3095,11 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     // 2. Swap credentials in localStorage
     localStorage.setItem('token', acc.token)
     localStorage.setItem('user', JSON.stringify({ id: acc.id, email: acc.email, display_name: acc.display_name, username: acc.username, avatar_url: acc.avatar_url }))
+    // Clear stale per-account E2E flags so the new account's encryption modal
+    // logic is re-evaluated fresh instead of inheriting the previous account's state
+    localStorage.removeItem('e2e_login_type')
+    localStorage.removeItem('e2e_password_validation_shown')
+    sessionStorage.removeItem('e2e_pw')
     // 3. Hard navigate — avoids React Router infinite redirect loop that occurs
     //    when onLogin() sets token then navigate('/login') triggers <Navigate to="/dashboard">
     window.location.href = '/dashboard'
@@ -8615,12 +8639,24 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       )}
 
       {/* Full Screen Loading - While decrypting messages */}
+      {/* Blocks ALL interaction with the app until decryption finishes — sits above
+          every other overlay (modals, call screen, menus) and absorbs all clicks/touches. */}
       {decryptingMessages && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.9)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 24 }}>
+        <div
+          onClick={e => { e.preventDefault(); e.stopPropagation() }}
+          onTouchStart={e => { e.preventDefault(); e.stopPropagation() }}
+          onContextMenu={e => { e.preventDefault(); e.stopPropagation() }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.9)', zIndex: 999999, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 24, pointerEvents: 'auto', touchAction: 'none' }}
+        >
           <div style={{ fontSize: 60 }}>🔓</div>
           <div style={{ fontSize: 18, color: '#f1f5f9', fontWeight: 600 }}>Decrypting Messages</div>
-          <div style={{ fontSize: 24, color: '#25d366' }}>⟳</div>
-          <div style={{ fontSize: 13, color: '#94a3b8' }}>Loading your messages...</div>
+          <div style={{ fontSize: 28, color: '#00a884', fontWeight: 700 }}>{decryptProgress}%</div>
+          <div style={{ width: 220, height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.12)', overflow: 'hidden' }}>
+            <div style={{ width: `${decryptProgress}%`, height: '100%', background: '#00a884', borderRadius: 3, transition: 'width 0.2s ease' }} />
+          </div>
+          <div style={{ fontSize: 13, color: '#94a3b8' }}>
+            {decryptProgress >= 100 ? 'Almost done...' : 'This may take a moment for large chat history...'}
+          </div>
         </div>
       )}
     </div>

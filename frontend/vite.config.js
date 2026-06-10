@@ -55,6 +55,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), injectFirebaseSW],
+    // Strip console.* / debugger statements from production builds —
+    // prevents key IDs, pubkey prefixes, and internal E2E flow details
+    // from ever reaching a deployed user's browser console.
+    esbuild: {
+      drop: mode === 'production' ? ['console', 'debugger'] : [],
+    },
     build: {
       outDir: 'dist',
       sourcemap: false,

@@ -312,10 +312,8 @@ export async function setupMasterKeyAfterLogin({ userId, password, token, apiUrl
         }
       }
     } catch (err) {
-      console.error('[E2Ev2] ❌ V2 backup restore FAILED:', err?.message)
-      console.error('[E2Ev2] Backup data:', backupStr?.substring(0, 50) + '...')
-      console.error('[E2Ev2] Password provided:', !!password)
-      console.error('[E2Ev2] Will generate fresh keypair instead')
+      // Never log backup ciphertext or password presence — could aid offline attacks
+      console.error('[E2Ev2] ❌ V2 backup restore failed — generating fresh keypair instead')
     }
   }
 
