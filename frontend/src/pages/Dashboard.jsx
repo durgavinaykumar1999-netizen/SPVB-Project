@@ -863,15 +863,10 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           const txt = String(m.text || '')
           const isEncrypted = txt.startsWith('__e2e__|') || txt.startsWith('__e2ev2__|') || m._encrypted
           if (!isEncrypted) return m
-          // V2: message has wrapped keys — use RSA-OAEP unwrap
-          if (v2Priv && isV2Message(m._raw || m)) {
-            const raw = m._raw || m
-            const isSender  = raw.from_user_id === myId
-            const wrappedKey = isSender ? raw.encrypted_key_for_sender : raw.encrypted_key_for_receiver
-            if (!wrappedKey) return m
-            const plain = await decryptMessageWithWrappedKey(m.text, wrappedKey, v2Priv)
-            const stillCipher = String(plain || '').startsWith('__e2e') || String(plain || '').startsWith('__e2ev2')
-            return { ...m, text: plain, _encrypted: stillCipher }
+          // V2: Disabled - use V1 as fallback
+          // TODO: Re-enable V2 once backup endpoint is working reliably
+          if (false && v2Priv && isV2Message(m._raw || m)) {
+            // Code disabled for now
           }
           // V1: ECDH shared key fallback
           if (!key || !pub) return m

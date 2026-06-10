@@ -325,19 +325,10 @@ export async function setupMasterKeyAfterLogin({ userId, password, token, apiUrl
   await storeMasterKeyPair(uid, privateKeyJwk, publicKeyJwk)
   await _uploadPubKey(publicKeyJwk, token, apiUrl)
 
-  // Upload encrypted RSA backup to dedicated V2 endpoint (separate from V1 ECDH backup)
-  if (password) {
-    try {
-      const backup = await exportMasterKeyBackup(privateKeyJwk, password, uid)
-      await fetch(apiUrl('/api/users/me/key-backup-v2'), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ backup })
-      })
-      console.log('[E2Ev2] RSA key backup uploaded to /key-backup-v2 ✅')
-    } catch (err) {
-      console.warn('[E2Ev2] V2 backup upload failed:', err?.message)
-    }
+  // V2 backup upload DISABLED temporarily
+  // TODO: Re-enable once backup restore is working reliably
+  if (false && password) {
+    // V2 backup upload disabled
   }
 
   console.log('[E2Ev2] Fresh RSA-OAEP keypair ready ✅')
