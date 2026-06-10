@@ -20,10 +20,10 @@ export const apiUrl = (path) => {
 }
 
 export const wsUrl = (path) => {
-  if (import.meta.env.VITE_BACKEND_URL) {
-    const ws = import.meta.env.VITE_BACKEND_URL.replace(/^http/, 'ws')
-    return `${ws}${path.replace(/^\/ws/, '/ws')}`
-  }
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${window.location.host}${path}`
+  // Always use BACKEND URL for WebSocket - never use localhost
+  // Use wss for production, ws for localhost dev
+  const backendHost = BACKEND.replace(/^https?:\/\//, '')
+  const isLocalhost = backendHost.includes('localhost') || backendHost.includes('127.0.0.1')
+  const proto = isLocalhost ? 'ws' : 'wss'
+  return `${proto}://${backendHost}${path}`
 }
