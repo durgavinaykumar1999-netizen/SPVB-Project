@@ -18,6 +18,7 @@ import hmac
 import re
 import shutil
 import smtplib
+import socket
 import time
 import threading
 import traceback
@@ -1118,10 +1119,21 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: str = "")
         if text_body:
             msg.attach(MIMEText(text_body, "plain"))
         msg.attach(MIMEText(html_body, "html"))
-        with smtplib.SMTP(_SMTP_SERVER, _SMTP_PORT, timeout=10) as server:
-            server.starttls()
-            server.login(_SMTP_USER, _SMTP_PASSWORD)
-            server.sendmail(_SMTP_USER, [to_email], msg.as_string())
+
+        # Render's network has no outbound IPv6 route, but smtp.gmail.com has an
+        # AAAA record — force IPv4-only DNS resolution for this connection so we
+        # don't hit "[Errno 101] Network is unreachable".
+        _orig_getaddrinfo = socket.getaddrinfo
+        def _ipv4_getaddrinfo(host, port, family=0, *args, **kwargs):
+            return _orig_getaddrinfo(host, port, socket.AF_INET, *args, **kwargs)
+        socket.getaddrinfo = _ipv4_getaddrinfo
+        try:
+            with smtplib.SMTP(_SMTP_SERVER, _SMTP_PORT, timeout=10) as server:
+                server.starttls()
+                server.login(_SMTP_USER, _SMTP_PASSWORD)
+                server.sendmail(_SMTP_USER, [to_email], msg.as_string())
+        finally:
+            socket.getaddrinfo = _orig_getaddrinfo
         return True
     except Exception as e:
         print(f"[email] send failed: {e}")
@@ -1505,6 +1517,10 @@ class SetPasswordRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+
+class VerifyResetCodeRequest(BaseModel):
+    email: EmailStr
+    code: str
 
 class ResetPasswordRequest(BaseModel):
     code: str
@@ -2079,7 +2095,8 @@ def forgot_password(req: ForgotPasswordRequest):
     if not user:
         raise HTTPException(status_code=404, detail="No account found with this email address")
 
-    code = ''.join(secrets.choice(string.digits) for _ in range(6))
+    code_chars = string.ascii_uppercase + string.digits
+    code = ''.join(secrets.choice(code_chars) for _ in range(6))
     expires = (datetime.utcnow() + timedelta(minutes=15)).isoformat() + "Z"
     mdb_save_reset_token(req.email, {"code": code, "expires_at": expires, "user_id": user["id"]})
 
@@ -2101,9 +2118,18 @@ def forgot_password(req: ForgotPasswordRequest):
 
     return {"ok": True, "message": "A reset code has been sent to your email address"}
 
+@app.post("/api/auth/verify-reset-code")
+def verify_reset_code(req: VerifyResetCodeRequest):
+    entry = mdb_get_reset_token(req.email)
+    if not entry or entry.get("code") != req.code.upper():
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+    if _parse_dt(entry["expires_at"]) < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Reset code has expired")
+    return {"ok": True}
+
 @app.post("/api/auth/reset-password")
 def reset_password_endpoint(req: ResetPasswordRequest):
-    email, entry = mdb_find_reset_token_by_code(req.code)
+    email, entry = mdb_find_reset_token_by_code(req.code.upper())
     if not entry:
         raise HTTPException(status_code=400, detail="Invalid or expired reset code")
     if _parse_dt(entry["expires_at"]) < datetime.utcnow():
