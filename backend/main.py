@@ -2096,12 +2096,10 @@ def forgot_password(req: ForgotPasswordRequest):
     """
     text_body = f"Hi {name},\n\nYour SPVB password reset code is: {code}\nThis code expires in 15 minutes.\n\nIf you didn't request this, you can safely ignore this email."
     sent = send_email(req.email, subject, html_body, text_body)
-
-    resp = {"ok": True, "message": "A reset code has been sent to your email address"}
     if not sent:
-        # SMTP not configured (or failed) — fall back to returning the code for dev/testing
-        resp["reset_code"] = code
-    return resp
+        print(f"[forgot-password] email send failed/not configured for {req.email}")
+
+    return {"ok": True, "message": "A reset code has been sent to your email address"}
 
 @app.post("/api/auth/reset-password")
 def reset_password_endpoint(req: ResetPasswordRequest):
