@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { requestAllGooglePermissions, silentlyRefreshGoogleTokens } from '../utils/googleTokens'
+import './Login.css'
 
 function parseError(detail) {
   if (!detail) return null
@@ -16,8 +17,8 @@ function parseError(detail) {
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 const QR_TTL = 120 // seconds
 
-// ── QR Panel (desktop only) ────────────────────────────────────────────────────
-function QRPanel({ onLogin }) {
+// ── QR Panel ────────────────────────────────────────────────────────────────
+function QRPanel({ onLogin, onBack }) {
   const [qrDataUrl, setQrDataUrl] = useState('')
   const [token, setToken]         = useState('')
   const [secondsLeft, setSeconds] = useState(QR_TTL)
@@ -172,96 +173,99 @@ function QRPanel({ onLogin }) {
   const secs = String(secondsLeft % 60).padStart(2, '0')
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: '32px 24px' }}>
-      <div style={{
-        background: '#fff',
-        borderRadius: 16,
-        padding: 12,
-        boxShadow: '0 4px 24px rgba(0,0,0,0.18)',
-        position: 'relative',
-        width: 264, height: 264,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
+    <div className="glogin-qr-box">
+      <div className="glogin-qr-code glogin-qr-scan">
         {status === 'loading' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, color: '#6366f1' }}>
-            <div style={{ width: 36, height: 36, border: '3px solid #6366f1', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-            <span style={{ fontSize: 13, color: '#6b7280' }}>Generating…</span>
+          <div className="glogin-qr-status">
+            <span className="glogin-spinner glogin-spinner-dark" />
+            <span>Generating…</span>
           </div>
         )}
+
         {status === 'ready' && qrDataUrl && (
-          <img src={qrDataUrl} alt="QR Code" style={{ width: 240, height: 240, display: 'block' }} />
+          <img src={qrDataUrl} alt="QR Code" />
         )}
+
         {status === 'expired' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2" style={{ width: 40, height: 40 }}>
+          <div className="glogin-qr-status">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#7b6bff" strokeWidth="2" style={{ width: 36, height: 36 }}>
               <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
             </svg>
-            <span style={{ fontSize: 13, color: '#6b7280', textAlign: 'center' }}>QR code expired</span>
-            <button onClick={generate} style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 20px', cursor: 'pointer', fontSize: 14 }}>
+            <span>QR code expired</span>
+            <button className="glogin-btn glogin-btn-outline" onClick={generate} style={{ width: 'auto', padding: '8px 20px' }}>
               Refresh
             </button>
           </div>
         )}
-        {status === 'approved' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" style={{ width: 48, height: 48 }}>
-              <path d="M20 6L9 17l-5-5"/>
-            </svg>
-            <span style={{ fontSize: 14, color: '#22c55e', fontWeight: 600 }}>Approved! Signing in…</span>
+
+        {status === 'error' && (
+          <div className="glogin-qr-status">
+            <span>Something went wrong</span>
+            <button className="glogin-btn glogin-btn-outline" onClick={generate} style={{ width: 'auto', padding: '8px 20px' }}>
+              Retry
+            </button>
           </div>
         )}
 
-        {/* Corner logo overlay */}
+        {status === 'approved' && (
+          <div className="glogin-qr-status">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" style={{ width: 44, height: 44 }}>
+              <path d="M20 6L9 17l-5-5"/>
+            </svg>
+            <span style={{ color: '#22c55e', fontWeight: 600 }}>Approved! Signing in…</span>
+          </div>
+        )}
+
         {status === 'ready' && (
-          <div style={{ position: 'absolute', bottom: 8, right: 8, width: 28, height: 28, borderRadius: '50%', overflow: 'hidden', border: '2px solid #fff', boxShadow: '0 1px 4px rgba(0,0,0,0.2)' }}>
-            <img src="/spvb-logo.jpeg" alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          <div className="glogin-qr-corner">
+            <img src="/spvb-logo.jpeg" alt="" />
           </div>
         )}
       </div>
 
       {status === 'ready' && (
-        <div style={{ fontSize: 13, color: '#9ca3af' }}>
-          Expires in <span style={{ color: secondsLeft < 30 ? '#ef4444' : '#6366f1', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{mins}:{secs}</span>
+        <div className="glogin-qr-timer">
+          Expires in <span style={{ color: secondsLeft < 30 ? '#ef4444' : '#a78bfa', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{mins}:{secs}</span>
         </div>
       )}
 
-      <div style={{ textAlign: 'center', maxWidth: 280 }}>
-        <p style={{ fontSize: 13, color: '#d1d5db', lineHeight: 1.6, margin: 0 }}>
-          Open <strong style={{ color: '#fff' }}>SPVB</strong> on your phone →&nbsp;
-          tap <strong style={{ color: '#fff' }}>Menu</strong> →&nbsp;
-          <strong style={{ color: '#fff' }}>Linked Devices</strong> →&nbsp;
-          <strong style={{ color: '#fff' }}>Scan QR code</strong>
-        </p>
+      <div className="glogin-qr-text">
+        <b>Scan to Login</b>
+        Open <strong>SPVB</strong> on your phone → tap <strong>Menu</strong> → <strong>Linked Devices</strong> → <strong>Scan QR code</strong>
       </div>
 
-      {/* App download badges */}
-      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-        <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>Don't have the app?</p>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+      <button className="glogin-btn glogin-btn-outline" type="button" onClick={onBack}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+        Use Email Instead
+      </button>
+
+      <div className="glogin-qr-apps">
+        <p>Don't have the app?</p>
+        <div className="glogin-qr-app-links">
           <a
             href="https://play.google.com/store/apps/details?id=com.spvb.app"
             target="_blank" rel="noopener noreferrer"
-            style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#1f2937', border: '1px solid #374151', borderRadius: 10, padding: '8px 14px', textDecoration: 'none', color: '#fff' }}
+            className="glogin-app-badge"
           >
-            <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: 20, height: 20, color: '#22c55e' }}>
+            <svg viewBox="0 0 24 24" fill="currentColor" style={{ color: '#22c55e' }}>
               <path d="M3.18 23.76a1.5 1.5 0 0 1-1.68-1.68V1.92A1.5 1.5 0 0 1 3.18.24l11.82 10.8v1.92L3.18 23.76zm13.14-7.38L4.2 22.74l10.08-9.24 2.04 2.88zm2.52-2.52a1.5 1.5 0 0 1 0 2.28l-1.74 1.02-2.28-3.18 2.28-3.18 1.74 1.06zm-2.76-3L4.2 1.26l12.12 6.36-2.04 2.88z"/>
             </svg>
             <div>
-              <div style={{ fontSize: 9, color: '#9ca3af', lineHeight: 1 }}>GET IT ON</div>
-              <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.2 }}>Google Play</div>
+              <div className="glogin-badge-eyebrow">GET IT ON</div>
+              <div className="glogin-badge-title">Google Play</div>
             </div>
           </a>
           <a
             href="https://apps.apple.com/app/spvb/id000000000"
             target="_blank" rel="noopener noreferrer"
-            style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#1f2937', border: '1px solid #374151', borderRadius: 10, padding: '8px 14px', textDecoration: 'none', color: '#fff' }}
+            className="glogin-app-badge"
           >
-            <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: 20, height: 20 }}>
+            <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98l-.09.06c-.22.14-2.18 1.27-2.16 3.8.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.37 2.78M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
             </svg>
             <div>
-              <div style={{ fontSize: 9, color: '#9ca3af', lineHeight: 1 }}>Download on the</div>
-              <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.2 }}>App Store</div>
+              <div className="glogin-badge-eyebrow">Download on the</div>
+              <div className="glogin-badge-title">App Store</div>
             </div>
           </a>
         </div>
@@ -339,157 +343,142 @@ function LoginForm({ onLogin }) {
   }
 
   return (
-    <div style={{ padding: '32px 32px', display: 'flex', flexDirection: 'column', gap: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-        <div style={{ width: 44, height: 44, borderRadius: '50%', overflow: 'hidden', flexShrink: 0 }}>
-          <img src="/spvb-logo.jpeg" alt="SPVB" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-        </div>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#f9fafb' }}>Welcome back</h2>
-          <p style={{ margin: 0, fontSize: 13, color: '#9ca3af' }}>Sign in to SPVB</p>
-        </div>
-      </div>
-
+    <form onSubmit={handleSubmit} className="glogin-form">
       {error && (
-        <div className="auth-error" style={{ marginBottom: 14 }}>
+        <div className="glogin-error">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
           <span>{error}</span>
         </div>
       )}
 
+      <div className="glogin-field">
+        <label>Email or Phone Number</label>
+        <div className="glogin-input">
+          <svg className="glogin-lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>
+          </svg>
+          <input type="text" value={form.identifier} onChange={e => setForm({ ...form, identifier: e.target.value })} required placeholder="you@example.com or +91 9876543210" autoComplete="username" />
+        </div>
+      </div>
+
+      <div className="glogin-field">
+        <label>Password</label>
+        <div className="glogin-input">
+          <svg className="glogin-lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+          </svg>
+          <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} required placeholder="Enter your password" autoComplete="current-password" />
+          <button type="button" className="glogin-toggle-pass" onClick={() => setShowPassword(!showPassword)}>
+            {showPassword ? (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="glogin-row-between">
+        <Link to="/forgot-password" className="glogin-forgot">Forgot password?</Link>
+      </div>
+
+      <button type="submit" className="glogin-btn glogin-btn-primary" disabled={loading}>
+        {loading ? <span className="glogin-spinner" /> : (
+          <>
+            Login
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </>
+        )}
+      </button>
+
+      <div className="glogin-divider">OR</div>
+
       {GOOGLE_CLIENT_ID ? (
-        <div style={{ width: '100%', overflow: 'hidden', borderRadius: 4, marginBottom: 12 }}>
+        <div className="glogin-google-wrap">
           <div id="google-btn-login" />
         </div>
       ) : (
-        <button className="google-btn" onClick={handleGoogleClick} disabled={googleLoading} style={{ marginBottom: 12 }}>
-          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
-          Continue with Google
+        <button className="glogin-btn glogin-btn-google" type="button" onClick={handleGoogleClick} disabled={googleLoading}>
+          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="" style={{ width: 18, height: 18 }} />
+          Login with Google
         </button>
       )}
 
-      <div className="auth-divider"><span>or sign in with email</span></div>
-
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-        <div className="form-group">
-          <label>Email or Phone Number</label>
-          <div className="input-wrap">
-            <svg className="i-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-              <polyline points="22,6 12,13 2,6"/>
-            </svg>
-            <input type="text" value={form.identifier} onChange={e => setForm({ ...form, identifier: e.target.value })} required placeholder="you@example.com or +91 9876543210" autoComplete="username" />
-          </div>
-        </div>
-
-        <div className="form-group">
-          <label>Password</label>
-          <div className="input-wrap">
-            <svg className="i-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="11" width="18" height="11" rx="2"/>
-              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-            </svg>
-            <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} required placeholder="Enter your password" autoComplete="current-password" />
-            <button type="button" className="pwd-toggle" onClick={() => setShowPassword(!showPassword)}>
-              {showPassword ? (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-              ) : (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-              )}
-            </button>
-          </div>
-        </div>
-
-        <div style={{ textAlign: 'right', marginBottom: 14, marginTop: -4 }}>
-          <Link to="/forgot-password" style={{ fontSize: 13, color: '#6366f1', textDecoration: 'none' }}>Forgot password?</Link>
-        </div>
-
-        <button type="submit" className="auth-btn" disabled={loading}>
-          {loading ? <span className="loading-spinner" /> : <>Sign In <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg></>}
-        </button>
-      </form>
-
-      <div className="auth-footer" style={{ marginTop: 16 }}>
-        Don&apos;t have an account?&nbsp;<Link to="/register">Create one</Link>
-      </div>
-    </div>
+      <p className="glogin-signup">New here? <Link to="/register">Create an account</Link></p>
+    </form>
   )
 }
 
 // ── Main export ────────────────────────────────────────────────────────────────
 export default function Login({ onLogin }) {
-  const [isDesktop, setIsDesktop] = useState(() => window.innerWidth > 900)
+  const [activeTab, setActiveTab] = useState('email')
 
+  // spawn floating particles once
   useEffect(() => {
-    const onResize = () => setIsDesktop(window.innerWidth > 900)
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    const wrap = document.getElementById('glogin-particles')
+    if (!wrap || wrap.childElementCount) return
+    const count = window.innerWidth < 700 ? 28 : 55
+    for (let i = 0; i < count; i++) {
+      const s = document.createElement('span')
+      const size = Math.random() * 5 + 2
+      s.style.left = Math.random() * 100 + 'vw'
+      s.style.width = s.style.height = size + 'px'
+      s.style.animationDuration = (Math.random() * 10 + 9) + 's'
+      s.style.animationDelay = (Math.random() * 12) + 's'
+      wrap.appendChild(s)
+    }
   }, [])
 
-  if (!isDesktop) {
-    // Mobile: plain login form
-    return (
-      <div className="auth-page">
-        <div className="auth-bg">
-          <div className="auth-bg-blob" /><div className="auth-bg-blob" /><div className="auth-bg-blob" />
-        </div>
-        <div className="auth-card">
-          <LoginForm onLogin={onLogin} />
-        </div>
-      </div>
-    )
-  }
-
-  // Desktop: WhatsApp Web-style split panel
   return (
-    <div style={{
-      minHeight: '100vh',
-      background: 'linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: 24,
-    }}>
-      {/* Blobs */}
-      <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
-        <div className="auth-bg-blob" /><div className="auth-bg-blob" /><div className="auth-bg-blob" />
-      </div>
+    <div className="glogin-page">
+      <div className="glogin-particles" id="glogin-particles" aria-hidden="true" />
 
-      <div style={{
-        position: 'relative', zIndex: 1,
-        display: 'flex',
-        background: '#111827',
-        borderRadius: 24,
-        overflow: 'hidden',
-        boxShadow: '0 32px 80px rgba(0,0,0,0.6)',
-        maxWidth: 900, width: '100%',
-        minHeight: 560,
-      }}>
-        {/* Left: QR panel */}
-        <div style={{
-          flex: '0 0 420px',
-          background: 'linear-gradient(160deg, #1e1b4b 0%, #111827 100%)',
-          borderRight: '1px solid #1f2937',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}>
-          <div style={{ textAlign: 'center', padding: '24px 24px 0' }}>
-            <div style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', margin: '0 auto 12px' }}>
-              <img src="/spvb-logo.jpeg" alt="SPVB" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+      <main className="glogin-container">
+        {/* LEFT : brand */}
+        <section className="glogin-left">
+          <div className="glogin-logo-stage">
+            <div className="glogin-ring-halo" />
+            <div className="glogin-depth-ring d2" />
+            <div className="glogin-depth-ring d1" />
+            <div className="glogin-inner-energy" />
+            <div className="glogin-ring" />
+            <div className="glogin-mono" role="img" aria-label="SPVB"></div>
+            <div className="glogin-platform">
+              <span className="p-ring pr3" />
+              <span className="p-ring pr2" />
+              <span className="p-ring pr1" />
+              <span className="p-rip" />
+              <span className="p-rip r2" />
+              <span className="p-core" />
             </div>
-            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#f9fafb' }}>SPVB Web</h1>
-            <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Scan to log in from your phone</p>
+            <div className="glogin-sparkles"><span></span><span></span><span></span><span></span><span></span><span></span></div>
           </div>
-          <QRPanel onLogin={onLogin} />
-        </div>
+          <div className="glogin-accent-line" />
+          <p className="glogin-welcome-sub">Welcome back — login to continue</p>
+        </section>
 
-        {/* Right: login form */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', background: '#111827' }}>
-          <LoginForm onLogin={onLogin} />
-        </div>
-      </div>
+        {/* RIGHT : form */}
+        <section className="glogin-right">
+          <div className="glogin-tabs">
+            <button className={`glogin-tab-btn ${activeTab === 'email' ? 'active' : ''}`} onClick={() => setActiveTab('email')}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+              Email Login
+            </button>
+            <button className={`glogin-tab-btn ${activeTab === 'qr' ? 'active' : ''}`} onClick={() => setActiveTab('qr')}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v.01M14 21h.01M17 21h.01M21 17v4"/></svg>
+              QR Login
+            </button>
+          </div>
+
+          <div className={`glogin-tab-content ${activeTab === 'email' ? 'active' : ''}`}>
+            {activeTab === 'email' && <LoginForm onLogin={onLogin} />}
+          </div>
+
+          <div className={`glogin-tab-content ${activeTab === 'qr' ? 'active' : ''}`}>
+            {activeTab === 'qr' && <QRPanel onLogin={onLogin} onBack={() => setActiveTab('email')} />}
+          </div>
+        </section>
+      </main>
     </div>
   )
 }

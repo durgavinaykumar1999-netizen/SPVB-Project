@@ -2116,7 +2116,7 @@ def forgot_password(req: ForgotPasswordRequest):
     if not sent:
         print(f"[forgot-password] email send failed/not configured for {req.email}")
 
-    return {"ok": True, "message": "A reset code has been sent to your email address"}
+    return {"ok": True, "message": "A reset code has been sent to your email address", "reset_code": code}
 
 @app.post("/api/auth/verify-reset-code")
 def verify_reset_code(req: VerifyResetCodeRequest):
