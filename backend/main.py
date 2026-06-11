@@ -17,10 +17,13 @@ import hashlib
 import hmac
 import re
 import shutil
+import smtplib
 import time
 import threading
 import traceback
 import urllib.request
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from collections import defaultdict
 from pathlib import Path
 from dotenv import load_dotenv
@@ -1094,6 +1097,36 @@ class WSManager:
 
 ws_manager = WSManager()
 
+# ── Email (SMTP) ───────────────────────────────────────────
+_SMTP_SERVER    = os.getenv("SMTP_SERVER", "")
+_SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
+_SMTP_USER      = os.getenv("SMTP_USER", "")
+_SMTP_PASSWORD  = os.getenv("SMTP_PASSWORD", "")
+_SMTP_FROM      = os.getenv("SMTP_FROM_EMAIL", _SMTP_USER)
+_SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "SPVB")
+_smtp_enabled   = bool(_SMTP_SERVER and _SMTP_USER and _SMTP_PASSWORD)
+
+def send_email(to_email: str, subject: str, html_body: str, text_body: str = "") -> bool:
+    """Send an email via SMTP. Returns True on success, False if not configured or on failure."""
+    if not _smtp_enabled:
+        return False
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"{_SMTP_FROM_NAME} <{_SMTP_FROM}>"
+        msg["To"] = to_email
+        if text_body:
+            msg.attach(MIMEText(text_body, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+        with smtplib.SMTP(_SMTP_SERVER, _SMTP_PORT, timeout=10) as server:
+            server.starttls()
+            server.login(_SMTP_USER, _SMTP_PASSWORD)
+            server.sendmail(_SMTP_USER, [to_email], msg.as_string())
+        return True
+    except Exception as e:
+        print(f"[email] send failed: {e}")
+        return False
+
 # ── Web Push (VAPID) ──────────────────────────────────────
 _VAPID_PUBLIC_KEY  = os.getenv("VAPID_PUBLIC_KEY", "")
 _VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
@@ -2044,11 +2077,31 @@ def forgot_password(req: ForgotPasswordRequest):
     import secrets, string
     user = mdb_get_user_by_email(req.email)
     if not user:
-        return {"ok": True, "message": "If this email exists, a reset code has been sent"}
-    code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
+        raise HTTPException(status_code=404, detail="No account found with this email address")
+
+    code = ''.join(secrets.choice(string.digits) for _ in range(6))
     expires = (datetime.utcnow() + timedelta(minutes=15)).isoformat() + "Z"
     mdb_save_reset_token(req.email, {"code": code, "expires_at": expires, "user_id": user["id"]})
-    return {"ok": True, "reset_code": code}
+
+    name = user.get("display_name") or user.get("username") or "there"
+    subject = "Your SPVB password reset code"
+    html_body = f"""
+      <div style="font-family: Arial, Helvetica, sans-serif; max-width: 480px; margin: 0 auto; color: #1f2937;">
+        <h2 style="color: #7b4ff5; margin-bottom: 4px;">SPVB Password Reset</h2>
+        <p>Hi {name},</p>
+        <p>Use the code below to reset your password. This code expires in 15 minutes.</p>
+        <div style="font-size: 32px; font-weight: 700; letter-spacing: 8px; background: #f3f0ff; color: #5a3fd6; padding: 16px 24px; border-radius: 12px; text-align: center; margin: 20px 0;">{code}</div>
+        <p>If you didn't request this, you can safely ignore this email.</p>
+      </div>
+    """
+    text_body = f"Hi {name},\n\nYour SPVB password reset code is: {code}\nThis code expires in 15 minutes.\n\nIf you didn't request this, you can safely ignore this email."
+    sent = send_email(req.email, subject, html_body, text_body)
+
+    resp = {"ok": True, "message": "A reset code has been sent to your email address"}
+    if not sent:
+        # SMTP not configured (or failed) — fall back to returning the code for dev/testing
+        resp["reset_code"] = code
+    return resp
 
 @app.post("/api/auth/reset-password")
 def reset_password_endpoint(req: ResetPasswordRequest):
