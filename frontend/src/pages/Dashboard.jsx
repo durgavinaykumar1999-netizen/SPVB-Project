@@ -769,11 +769,13 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       fetch(apiUrl(`/api/users/${userId}/pubkey`), { headers: { Authorization: `Bearer ${token}` } })
         .then(r => r.ok ? r.json() : null)
         .then(async data => {
+          try {
           const serverX = data?.pubkey ? (() => { try { return JSON.parse(data.pubkey).x } catch { return null } })() : null
           if (!serverX) {
             // Server has no pubkey — upload local key
             console.warn('[E2E] No pubkey on server — uploading now')
-            await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
+            const upRes = await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
+            if (!upRes.ok) throw new Error(`Failed to upload pubkey: ${upRes.statusText}`)
             console.log('[E2E] Pubkey uploaded ✅')
           } else if (serverX !== localX) {
             console.warn(`[E2E] Pubkey MISMATCH — server-x=${serverX?.slice(0,8)}… local-x=${localX?.slice(0,8)}…`)
@@ -782,7 +784,8 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
             if (loginTypeNow !== 'qr' && loginTypeNow !== 'google') {
               // Phone/password login: never show modal or probe backup again —
               // local key (derived from the login password) is authoritative.
-              await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
+              const syncRes = await fetch(apiUrl('/api/users/me/pubkey'), { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ pubkey: publicKeyJwk }) })
+              if (!syncRes.ok) throw new Error(`Failed to re-sync pubkey: ${syncRes.statusText}`)
               console.log('[E2E] Pubkey re-synced (password login) ✅')
             } else {
               // QR/Google login: check if server has a backup before overwriting
@@ -805,6 +808,9 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
             }
           } else {
             console.log(`[E2E] Server pubkey matches ✅ x=${serverX?.slice(0,8)}…`)
+          }
+          } catch (err) {
+            console.error('[E2E] Pubkey sync error:', err?.message)
           }
         })
         .catch(err => console.warn('[E2E] Pubkey sync check failed:', err?.message))
