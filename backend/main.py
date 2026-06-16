@@ -1128,15 +1128,20 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: str = "")
             return _orig_getaddrinfo(host, port, socket.AF_INET, *args, **kwargs)
         socket.getaddrinfo = _ipv4_getaddrinfo
         try:
-            with smtplib.SMTP(_SMTP_SERVER, _SMTP_PORT, timeout=10) as server:
-                server.starttls()
-                server.login(_SMTP_USER, _SMTP_PASSWORD)
-                server.sendmail(_SMTP_USER, [to_email], msg.as_string())
+            if _SMTP_PORT == 587:
+                with smtplib.SMTP(_SMTP_SERVER, _SMTP_PORT, timeout=30) as server:
+                    server.starttls()
+                    server.login(_SMTP_USER, _SMTP_PASSWORD)
+                    server.sendmail(_SMTP_USER, [to_email], msg.as_string())
+            else:
+                with smtplib.SMTP_SSL(_SMTP_SERVER, _SMTP_PORT, timeout=30) as server:
+                    server.login(_SMTP_USER, _SMTP_PASSWORD)
+                    server.sendmail(_SMTP_USER, [to_email], msg.as_string())
         finally:
             socket.getaddrinfo = _orig_getaddrinfo
         return True
     except Exception as e:
-        print(f"[email] send failed: {e}")
+        print(f"[email] send failed ({type(e).__name__}): {e}")
         return False
 
 # ── Web Push (VAPID) ──────────────────────────────────────
