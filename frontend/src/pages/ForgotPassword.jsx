@@ -6,7 +6,6 @@ import './AuthForm.css'
 export default function ForgotPassword() {
   const [step, setStep] = useState(1)
   const [email, setEmail] = useState('')
-  const [shownCode, setShownCode] = useState('')
   const [code, setCode] = useState('')
   const [form, setForm] = useState({ password: '', confirmPassword: '' })
   const [showPassword, setShowPassword] = useState(false)
@@ -50,7 +49,6 @@ export default function ForgotPassword() {
         if (res.status === 404) setNotRegistered(true)
         throw new Error(data.detail || 'Request failed')
       }
-      setShownCode(data.reset_code || '')
       setStep(2)
     } catch (err) {
       setError(err.message)
@@ -199,18 +197,6 @@ export default function ForgotPassword() {
 
             {!codeVerified ? (
               <form onSubmit={handleVerifyCode} className="gauth-form">
-                {shownCode && (
-                  <div className="gauth-code-box">
-                    <div className="gauth-code-box-text">
-                      <span className="gauth-code-box-label">Your reset code (valid 15 min):</span>
-                      <span className="gauth-code-box-value">{shownCode}</span>
-                    </div>
-                    <button type="button" onClick={() => setCode(shownCode)}>
-                      Auto-fill
-                    </button>
-                  </div>
-                )}
-
                 <div className="gauth-field">
                   <label>Reset Code</label>
                   <div className="gauth-input gauth-code-input">
@@ -324,7 +310,6 @@ export default function ForgotPassword() {
                 } else {
                   setStep(1)
                   setCode('')
-                  setShownCode('')
                 }
               }}
             >

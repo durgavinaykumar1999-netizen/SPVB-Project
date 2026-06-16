@@ -1365,14 +1365,17 @@ def verify_password(p: str, h: str) -> bool:
 
 # ── Rate limiting ─────────────────────────────────────────
 # In-memory sliding-window counters: { key: [timestamp, ...] }
-_login_attempts: dict  = defaultdict(list)
-_ip_requests: dict     = defaultdict(list)
-_user_requests: dict   = defaultdict(list)
-_MAX_LOGIN_ATTEMPTS    = 10
-_LOGIN_WINDOW_SECONDS  = 300   # 5 min window for login attempts
-_IP_LIMIT_PER_MIN      = 600   # max requests per IP per minute
-_USER_LIMIT_PER_MIN    = 300   # max requests per user per minute
-_RL_LOCK               = threading.Lock()
+_login_attempts: dict      = defaultdict(list)
+_ip_requests: dict         = defaultdict(list)
+_user_requests: dict       = defaultdict(list)
+_password_reset_attempts: dict = defaultdict(list)  # Rate limit password resets per email
+_MAX_LOGIN_ATTEMPTS        = 10
+_LOGIN_WINDOW_SECONDS      = 300   # 5 min window for login attempts
+_MAX_PASSWORD_RESETS       = 5
+_PASSWORD_RESET_WINDOW     = 3600  # 1 hour window for password resets per email
+_IP_LIMIT_PER_MIN          = 600   # max requests per IP per minute
+_USER_LIMIT_PER_MIN        = 300   # max requests per user per minute
+_RL_LOCK                   = threading.Lock()
 
 def _check_rate_limit(identifier: str):
     """Login-specific rate limit — 10 attempts per 5 minutes."""
@@ -1401,12 +1404,21 @@ def _check_user_rate(user_id: str):
             raise HTTPException(status_code=429, detail="Request limit reached. Please slow down.")
         _user_requests[user_id].append(now)
 
+def _check_password_reset_rate(email: str):
+    """Limit password reset requests to 5 per email per hour to prevent brute force."""
+    now = time.time()
+    with _RL_LOCK:
+        _password_reset_attempts[email] = [t for t in _password_reset_attempts[email] if now - t < _PASSWORD_RESET_WINDOW]
+        if len(_password_reset_attempts[email]) >= _MAX_PASSWORD_RESETS:
+            raise HTTPException(status_code=429, detail="Too many password reset requests. Try again in 1 hour.")
+        _password_reset_attempts[email].append(now)
+
 def _cleanup_rate_buckets():
     """Purge stale entries so memory doesn't grow unbounded."""
     now = time.time()
     with _RL_LOCK:
-        for d in (_ip_requests, _user_requests, _login_attempts):
-            stale = [k for k, v in d.items() if not v or now - v[-1] > 600]
+        for d in (_ip_requests, _user_requests, _login_attempts, _password_reset_attempts):
+            stale = [k for k, v in d.items() if not v or now - v[-1] > 3700]
             for k in stale:
                 del d[k]
 
@@ -1596,6 +1608,13 @@ async def qr_ws_endpoint(websocket: WebSocket, token: str):
     finally:
         ws_manager.connections.pop(key, None)
 
+def _safe_int(value) -> int:
+    """Safely convert value to int, returns None if invalid."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
 @app.websocket("/ws/{user_id}")
 async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
     try:
@@ -1608,9 +1627,10 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
         return
 
     await ws_manager.connect(user_id, websocket)
-    from_user = payload.get("username", ""), payload.get("email", "")
+    username = payload.get("username", "") or ""
+    email = payload.get("email", "") or ""
     caller_display = payload.get("display_name") or payload.get("username", f"User {user_id}")
-    mdb_set_status(user_id, from_user[0], from_user[1], "online")
+    mdb_set_status(user_id, username, email, "online")
     # Broadcast online status to all connected users instantly
     await ws_manager.broadcast_all({"type": "user_status", "user_id": user_id, "status": "online"}, exclude_uid=str(user_id))
     # Update last_seen for this session so the devices list shows recent activity
@@ -1636,7 +1656,9 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
                 if msg_id:
                     threading.Thread(target=db_mark_messages_delivered, args=([msg_id],), daemon=True).start()
                     # Notify sender that message was delivered
-                    await ws_manager.send(str(user_id), {"type": "message_delivered", "message_ids": [msg_id], "by": int(target)})
+                    target_id = _safe_int(target)
+                    if target_id:
+                        await ws_manager.send(str(user_id), {"type": "message_delivered", "message_ids": [msg_id], "by": target_id})
 
             if msg_type == "call_answer":
                 # Tell all OTHER tabs/devices of this user (the callee) to dismiss
@@ -1657,17 +1679,19 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
                 call_type = data.get("callType", "voice")
                 icon = "📹" if call_type == "video" else "📞"
                 # Always send call push — even if target has WS open (might be backgrounded on mobile)
-                threading.Thread(
-                    target=_send_push,
-                    args=(
-                        int(target),
-                        f"{icon} Incoming {call_type} call",
-                        f"{caller_display} is calling you",
-                        {"type": "call", "from": str(user_id), "callType": call_type,
-                         "callerName": caller_display},
-                    ),
-                    daemon=True,
-                ).start()
+                target_id = _safe_int(target)
+                if target_id:
+                    threading.Thread(
+                        target=_send_push,
+                        args=(
+                            target_id,
+                            f"{icon} Incoming {call_type} call",
+                            f"{caller_display} is calling you",
+                            {"type": "call", "from": str(user_id), "callType": call_type,
+                             "callerName": caller_display},
+                        ),
+                        daemon=True,
+                    ).start()
 
             elif msg_type == "chat_message":
                 # Push for WS-relayed messages when target is offline or has no active WS tab
@@ -1684,23 +1708,25 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
                         preview = content[:80]
                     # Mark delivered + tell sender → double grey ticks
                     ws_msg_id = data.get("message", {}).get("id") if isinstance(data.get("message"), dict) else None
-                    if ws_msg_id:
+                    target_id = _safe_int(target)
+                    if ws_msg_id and target_id:
                         threading.Thread(target=db_mark_messages_delivered, args=([ws_msg_id],), daemon=True).start()
                         await ws_manager.send(str(user_id), {
                             "type": "message_delivered",
                             "message_ids": [ws_msg_id],
-                            "by": int(target),
+                            "by": target_id,
                         })
-                    threading.Thread(
-                        target=_send_push,
-                        args=(
-                            int(target),
-                            caller_display,
-                            preview,
-                            {"type": "message", "from": str(user_id)},
-                        ),
-                        daemon=True,
-                    ).start()
+                    if target_id:
+                        threading.Thread(
+                            target=_send_push,
+                            args=(
+                                target_id,
+                                caller_display,
+                                preview,
+                                {"type": "message", "from": str(user_id)},
+                            ),
+                            daemon=True,
+                        ).start()
     except WebSocketDisconnect:
         ws_manager.disconnect(str(user_id), websocket)
         # Only mark offline when ALL tabs/devices have disconnected
@@ -1769,7 +1795,9 @@ def get_e2e_status(cu: dict = Depends(get_current_user)):
 
     # Check all contacts' pubkeys
     saved_ids  = mdb_get_saved_contacts(str(my_id))
-    contacts   = list(col_users.find({"id": {"$in": [int(i) for i in saved_ids]}}, {"_id": 0, "id": 1, "username": 1, "pubkey": 1}))
+    # Safely convert contact IDs, filtering out invalid ones
+    valid_ids = [_safe_int(i) for i in saved_ids if _safe_int(i) is not None]
+    contacts   = list(col_users.find({"id": {"$in": valid_ids}}, {"_id": 0, "id": 1, "username": 1, "pubkey": 1})) if valid_ids else []
     contact_status = [{"id": c["id"], "username": c.get("username"), "has_pubkey": bool(c.get("pubkey"))} for c in contacts]
     missing = [c for c in contact_status if not c["has_pubkey"]]
 
@@ -1874,7 +1902,7 @@ def register_fcm_token(body: dict, cu: dict = Depends(get_current_user)):
     session_id = cu.get("session_id", "")
     col_fcm_tokens.update_one(
         {"token": token},
-        {"$set": {"user_id": cu["user_id"], "token": token, "session_id": session_id, "updated_at": datetime.utcnow()}},
+        {"$set": {"user_id": cu["user_id"], "token": token, "session_id": session_id, "updated_at": datetime.utcnow().isoformat() + "Z"}},
         upsert=True,
     )
     return {"ok": True}
@@ -2091,6 +2119,7 @@ def set_password(req: SetPasswordRequest, cu: dict = Depends(get_current_user)):
 @app.post("/api/auth/forgot-password")
 def forgot_password(req: ForgotPasswordRequest):
     import secrets, string
+    _check_password_reset_rate(req.email)
     user = mdb_get_user_by_email(req.email)
     if not user:
         raise HTTPException(status_code=404, detail="No account found with this email address")
@@ -2112,11 +2141,14 @@ def forgot_password(req: ForgotPasswordRequest):
       </div>
     """
     text_body = f"Hi {name},\n\nYour SPVB password reset code is: {code}\nThis code expires in 15 minutes.\n\nIf you didn't request this, you can safely ignore this email."
+    print(f"[forgot-password] attempting to send email to {req.email}, SMTP enabled: {_smtp_enabled}")
     sent = send_email(req.email, subject, html_body, text_body)
     if not sent:
         print(f"[forgot-password] email send failed/not configured for {req.email}")
+    else:
+        print(f"[forgot-password] email sent successfully to {req.email}")
 
-    return {"ok": True, "message": "A reset code has been sent to your email address", "reset_code": code}
+    return {"ok": True, "message": "A reset code has been sent to your email address"}
 
 @app.post("/api/auth/verify-reset-code")
 def verify_reset_code(req: VerifyResetCodeRequest):
@@ -2770,8 +2802,15 @@ async def create_status(body: StatusRequest, cu: dict = Depends(get_current_user
     }
     mdb_save_status(s)
     for uid in list(ws_manager.connections.keys()):
-        if int(uid) != cu["user_id"]:
-            await ws_manager.send(uid, {"type": "new_status", "status": s})
+        # Skip QR sockets (format: "qr_token") — only broadcast to actual user connections
+        if uid.startswith("qr_"):
+            continue
+        try:
+            if int(uid) != cu["user_id"]:
+                await ws_manager.send(uid, {"type": "new_status", "status": s})
+        except (ValueError, TypeError):
+            # Skip invalid UIDs (shouldn't happen, but safety guard)
+            continue
     return s
 
 @app.get("/api/statuses")
@@ -3478,8 +3517,8 @@ async def approve_qr_token(token: str, cu: dict = Depends(get_current_user)):
             "created_at": now_iso,
             "last_seen": now_iso
         })
-    except:
-        pass
+    except Exception as e:
+        print(f"[qr] session save error: {e}")
 
     rec.update({"status": "approved", "approved": True, "jwt": new_jwt, "session_id": session_id})
     mdb_save_qr_token(token, {k: v for k, v in rec.items() if k != "token"})
