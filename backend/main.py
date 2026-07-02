@@ -2701,7 +2701,8 @@ async def schedule_message(
     """Schedule a message to be sent at a future time"""
     try:
         scheduled_dt = datetime.fromisoformat(scheduled_time.replace('Z', '+00:00'))
-        if scheduled_dt <= datetime.utcnow():
+        now_utc = datetime.now(scheduled_dt.tzinfo)
+        if scheduled_dt <= now_utc:
             raise HTTPException(status_code=400, detail="Scheduled time must be in the future")
 
         msg_id = _next_id(col_scheduled_messages)
@@ -2721,8 +2722,8 @@ async def schedule_message(
             "message": message,
             "file_url": file_url,
             "file_name": file_name,
-            "scheduled_time": scheduled_dt.isoformat() + "Z",
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "scheduled_time": scheduled_dt.isoformat(),
+            "created_at": datetime.now(scheduled_dt.tzinfo).isoformat(),
             "sent": False,
         }
         col_scheduled_messages.insert_one(scheduled_msg)
@@ -2769,14 +2770,15 @@ async def update_scheduled_message(
         raise HTTPException(status_code=403, detail="Cannot update another user's scheduled message")
 
     scheduled_dt = datetime.fromisoformat(scheduled_time.replace('Z', '+00:00'))
-    if scheduled_dt <= datetime.utcnow():
+    now_utc = datetime.now(scheduled_dt.tzinfo)
+    if scheduled_dt <= now_utc:
         raise HTTPException(status_code=400, detail="Scheduled time must be in the future")
 
     col_scheduled_messages.update_one(
         {"id": message_id},
         {"$set": {
             "message": message,
-            "scheduled_time": scheduled_dt.isoformat() + "Z"
+            "scheduled_time": scheduled_dt.isoformat()
         }}
     )
     return {"ok": True}
