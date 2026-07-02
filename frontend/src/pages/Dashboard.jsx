@@ -3275,6 +3275,12 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     const authToken  = localStorage.getItem('token')
     const fcmToken   = localStorage.getItem('fcm_token')
     const sessionId  = localStorage.getItem('session_id')
+    const user       = JSON.parse(localStorage.getItem('user') || '{}')
+
+    // ── 0. Delete E2E private key from IndexedDB (security)
+    try {
+      if (user?.id) deleteStoredKeyPair(user.id).catch(() => {})
+    } catch {}
 
     // ── 1. Close WebSocket immediately (backend marks user offline)
     try { wsRef.current?.close() } catch {}
@@ -3329,7 +3335,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     } catch {}
 
     // ── 6. Clear Firebase IndexedDB databases (FCM tokens, installations)
-    //    NEVER delete spvb_e2e — it holds the user's private key and must survive logout
+    //    E2E key is deleted separately above for security (prevents access on shared devices)
     try {
       const FIREBASE_DBS = ['firebase-installations-database', 'firebase-messaging-database', 'firebaseLocalStorageDb', 'firebase-heartbeat-database']
       indexedDB.databases?.().then(dbs => {

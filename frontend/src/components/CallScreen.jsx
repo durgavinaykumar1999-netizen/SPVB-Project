@@ -321,6 +321,16 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
 
     const setup = async () => {
       try {
+        // Early-capture listener BEFORE any awaits to prevent race condition
+        let earlyOffer = null
+        const earlyOfferListener = (ev) => {
+          try {
+            const d = JSON.parse(ev.data)
+            if (d.type === 'call_offer' && String(d.from) === targetId) earlyOffer = d.sdp
+          } catch {}
+        }
+        wsRef.current?.addEventListener('message', earlyOfferListener)
+
         const isMob = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)
         const videoConstraints = isMob
           ? { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }
@@ -399,7 +409,7 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
           send({ type: 'call_offer', callType: type, sdp: offer })
           if (alive) setStatus('ringing')
         } else {
-          let sdp = offerSdp
+          let sdp = offerSdp || earlyOffer
           if (!sdp) {
             setStatus('connecting')
             sdp = await new Promise((resolve) => {
@@ -415,6 +425,7 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
               wsRef.current?.addEventListener('message', listener)
             })
           }
+          wsRef.current?.removeEventListener('message', earlyOfferListener)
           if (!sdp || !alive) { cleanup(false); safeEnd({ duration: 0, connected: false, rejected: false }); return }
           await pc.setRemoteDescription(new RTCSessionDescription(sdp)); if (!alive) return
           remoteDescSet.current = true; drainPending()
@@ -477,6 +488,11 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
     try {
       const newStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: newFacing }, audio: false })
       const newVT = newStream.getVideoTracks()[0]
+
+      // Update WebRTC sender so remote peer sees new camera
+      const sender = pcRef.current?.getSenders().find(s => s.track?.kind === 'video')
+      if (sender) await sender.replaceTrack(newVT)
+
       if (rawVideoElRef.current) { rawVideoElRef.current.srcObject = new MediaStream([newVT]); rawVideoElRef.current.play().catch(() => {}) }
       localStreamRef.current?.getVideoTracks().forEach(t => t.stop())
       const audio = localStreamRef.current?.getAudioTracks() || []

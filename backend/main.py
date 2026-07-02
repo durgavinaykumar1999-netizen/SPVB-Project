@@ -391,6 +391,7 @@ col_password_reset = mdb["password_reset_tokens"]
 col_push_subs      = mdb["push_subscriptions"]   # web push subscriptions
 col_sessions       = mdb["login_sessions"]        # all active login sessions across devices
 col_scheduled_messages = mdb["scheduled_messages"]  # scheduled messages
+col_fcm_tokens     = mdb["fcm_tokens"]             # Firebase Cloud Messaging tokens
 
 # Indexes (wrapped — mongita supports basic indexes; compound/unique silently ignored)
 def _idx(col, key, **kw):
@@ -408,6 +409,8 @@ _idx(col_messages, [("from_user_id", ASCENDING), ("recipient_id", ASCENDING), ("
 _idx(col_scheduled_messages, "id", unique=True)
 _idx(col_scheduled_messages, [("from_user_id", ASCENDING), ("contact_id", ASCENDING)])
 _idx(col_scheduled_messages, "scheduled_time")
+_idx(col_fcm_tokens, "user_id")
+_idx(col_fcm_tokens, "session_id")
 _idx(col_login_events, "id")
 _idx(col_statuses, "id")
 _idx(col_statuses, [("user_id", ASCENDING), ("expires_at", ASCENDING)])
@@ -608,11 +611,16 @@ def db_mark_messages_read(contact_id: int, my_id: int) -> list:
         ids = [d["id"] for d in docs]
         if ids:
             seen_at = datetime.utcnow().isoformat() + "Z"
-            # Start 24-hour expiry clock from the moment the receiver sees the message
-            expires_24h = (datetime.utcnow() + timedelta(hours=24)).isoformat() + "Z"
+            # Mark as read and seen, but preserve shorter TTL if message is disappearing
             col_messages.update_many(
                 {"id": {"$in": ids}},
-                {"$set": {"is_read": 1, "status": "seen", "seen_at": seen_at, "expires_at": expires_24h}}
+                {"$set": {"is_read": 1, "status": "seen", "seen_at": seen_at}}
+            )
+            # Only extend TTL to 24h if message would expire sooner
+            expires_24h = (datetime.utcnow() + timedelta(hours=24)).isoformat() + "Z"
+            col_messages.update_many(
+                {"id": {"$in": ids}, "expires_at": {"$lt": expires_24h}},
+                {"$set": {"expires_at": expires_24h}}
             )
     return ids
 
@@ -1240,9 +1248,6 @@ else:
 
 # ── Firebase Cloud Messaging (FCM) ───────────────────────
 _fcm_app = None
-col_fcm_tokens = mdb["fcm_tokens"]
-_idx(col_fcm_tokens, "user_id")
-_idx(col_fcm_tokens, "session_id")
 
 def _init_firebase():
     global _fcm_app
@@ -1787,16 +1792,8 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
                         preview = "New message"
                     else:
                         preview = content[:80]
-                    # Mark delivered + tell sender → double grey ticks
-                    ws_msg_id = data.get("message", {}).get("id") if isinstance(data.get("message"), dict) else None
+                    # Only send push for offline messages — don't mark as delivered until they receive it
                     target_id = _safe_int(target)
-                    if ws_msg_id and target_id:
-                        threading.Thread(target=db_mark_messages_delivered, args=([ws_msg_id],), daemon=True).start()
-                        await ws_manager.send(str(user_id), {
-                            "type": "message_delivered",
-                            "message_ids": [ws_msg_id],
-                            "by": target_id,
-                        })
                     if target_id:
                         threading.Thread(
                             target=_send_push,
