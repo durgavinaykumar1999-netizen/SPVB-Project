@@ -17,6 +17,8 @@ import IncomingCallBanner from '../components/IncomingCallBanner'
 import AddContactModal from '../components/AddContactModal'
 import StatusViewer from '../components/StatusViewer'
 import ImageCropper from '../components/ImageCropper'
+import ScheduleMessageModal from '../components/ScheduleMessageModal'
+import ScheduledMessagesList from '../components/ScheduledMessagesList'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 const isGoogleUser = () => localStorage.getItem('google_auth') === 'true'
@@ -603,6 +605,11 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   const [showScheduler, setShowScheduler] = useState(false)
   const [scheduleTime, setScheduleTime] = useState('')
   const scheduledTimersRef = useRef([])
+
+  // New: Full Schedule Message Modal
+  const [showScheduleModal, setShowScheduleModal] = useState(false)
+  const [showScheduledList, setShowScheduledList] = useState(false)
+  const [editingScheduledMsg, setEditingScheduledMsg] = useState(null)
 
   /* ── Feature: Chat Wallpaper (#14) ── */
   const [chatWallpapers, setChatWallpapers] = useState(() => { try { const uid = JSON.parse(localStorage.getItem('user') || '{}').id; return JSON.parse(localStorage.getItem(`chatWallpapers_${uid}`) || '{}') } catch { return {} } })
@@ -5881,6 +5888,8 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                             { label: 'Contact', bg: '#f39c12', icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg>, action: () => { setShowAttachMenu(false); setShowContactPicker(true) } },
                             { label: 'Audio', bg: '#e74c3c', icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.31 6-6.72h-1.7z"/></svg>, action: () => { setShowAttachMenu(false); startRecording() } },
                             { label: 'Broadcast', bg: '#00a884', icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92c0-1.61-1.31-2.92-2.92-2.92z"/></svg>, action: () => { setShowAttachMenu(false); setShowBroadcastModal(true) } },
+                            { label: '📅 Schedule', bg: '#2980b9', icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zm-5-5H7v5h7v-5z"/></svg>, action: () => { setShowAttachMenu(false); setShowScheduleModal(true) } },
+                            { label: '📋 Scheduled', bg: '#8e44ad', icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><path d="M11 7h2v2h-2zm0 4h2v2h-2zm4-4h2v2h-2zm0 4h2v2h-2zM4 3v18c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2V3H4zm2 16V5h12v14H6z"/></svg>, action: () => { setShowAttachMenu(false); setShowScheduledList(true) } },
                             ...(isGroupChat ? [{ label: 'Poll', bg: '#6c5ce7', icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><path d="M5 9h4v11H5V9zm10-5h4v16h-4V4zm-5 7h4v9h-4v-9z"/></svg>, action: () => { setShowAttachMenu(false); setShowPollModal(true) } }] : []),
                           ].map(({ label, bg, icon, action }) => (
                             <button key={label} onClick={action}
@@ -6957,6 +6966,33 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           onClose={() => setShowAddContact(false)}
           onSaved={handleContactSaved}
           themeColor={themeColor}
+        />
+      )}
+
+      {/* ── SCHEDULE MESSAGE MODAL ── */}
+      {showScheduleModal && activeId && activeId !== 'bot' && (
+        <ScheduleMessageModal
+          isOpen={showScheduleModal}
+          onClose={() => setShowScheduleModal(false)}
+          contactName={activeContact?.name || 'Unknown'}
+          contactId={activeId}
+          onSchedule={(msg) => {
+            setInput('')
+            alert(`Message scheduled for ${msg.scheduledTime.toLocaleString()}`)
+          }}
+        />
+      )}
+
+      {/* ── SCHEDULED MESSAGES LIST ── */}
+      {showScheduledList && activeId && activeId !== 'bot' && (
+        <ScheduledMessagesList
+          contactId={activeId}
+          onEdit={(msg) => {
+            // Could be enhanced to open edit modal
+            console.log('Edit scheduled message:', msg)
+          }}
+          isOpen={showScheduledList}
+          onClose={() => setShowScheduledList(false)}
         />
       )}
 
