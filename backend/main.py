@@ -390,6 +390,7 @@ col_linked_devices = mdb["linked_devices"]
 col_password_reset = mdb["password_reset_tokens"]
 col_push_subs      = mdb["push_subscriptions"]   # web push subscriptions
 col_sessions       = mdb["login_sessions"]        # all active login sessions across devices
+col_scheduled_messages = mdb["scheduled_messages"]  # scheduled messages
 
 # Indexes (wrapped — mongita supports basic indexes; compound/unique silently ignored)
 def _idx(col, key, **kw):
@@ -404,6 +405,9 @@ _idx(col_messages, "id", unique=True)
 _idx(col_messages, [("from_user_id", ASCENDING), ("expires_at", ASCENDING)])
 _idx(col_messages, [("recipient_id", ASCENDING), ("expires_at", ASCENDING)])
 _idx(col_messages, [("from_user_id", ASCENDING), ("recipient_id", ASCENDING), ("expires_at", ASCENDING)])
+_idx(col_scheduled_messages, "id", unique=True)
+_idx(col_scheduled_messages, [("from_user_id", ASCENDING), ("contact_id", ASCENDING)])
+_idx(col_scheduled_messages, "scheduled_time")
 _idx(col_login_events, "id")
 _idx(col_statuses, "id")
 _idx(col_statuses, [("user_id", ASCENDING), ("expires_at", ASCENDING)])
@@ -2683,6 +2687,98 @@ async def delete_message(message_id: int, cu: dict = Depends(get_current_user)):
     recipient_id = msg.get("recipient_id")
     if recipient_id:
         await ws_manager.send(str(recipient_id), {"type": "message_deleted", "message_id": message_id})
+    return {"ok": True}
+
+# ── Scheduled Messages ────────────────────────────────────────
+@app.post("/api/messages/schedule")
+async def schedule_message(
+    contact_id: int = Form(...),
+    message: str = Form(""),
+    scheduled_time: str = Form(...),
+    file: UploadFile = None,
+    cu: dict = Depends(get_current_user)
+):
+    """Schedule a message to be sent at a future time"""
+    try:
+        scheduled_dt = datetime.fromisoformat(scheduled_time.replace('Z', '+00:00'))
+        if scheduled_dt <= datetime.utcnow():
+            raise HTTPException(status_code=400, detail="Scheduled time must be in the future")
+
+        msg_id = _next_id(col_scheduled_messages)
+        file_url = None
+        file_name = None
+
+        if file:
+            file_content = await file.read()
+            file_name = file.filename
+            file_ext = Path(file_name).suffix
+            file_url = _upload_media(file_content, file_ext, "document", "spvb/scheduled")
+
+        scheduled_msg = {
+            "id": msg_id,
+            "from_user_id": cu["user_id"],
+            "contact_id": contact_id,
+            "message": message,
+            "file_url": file_url,
+            "file_name": file_name,
+            "scheduled_time": scheduled_dt.isoformat() + "Z",
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "sent": False,
+        }
+        col_scheduled_messages.insert_one(scheduled_msg)
+        return {"ok": True, "id": msg_id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/messages/scheduled")
+def get_scheduled_messages(contact_id: int, cu: dict = Depends(get_current_user)):
+    """Get all scheduled messages for a contact"""
+    messages = list(col_scheduled_messages.find({
+        "from_user_id": cu["user_id"],
+        "contact_id": contact_id,
+        "sent": False
+    }).sort("scheduled_time", ASCENDING))
+    return {"scheduled_messages": messages}
+
+@app.delete("/api/messages/scheduled/{message_id}")
+async def delete_scheduled_message(message_id: int, cu: dict = Depends(get_current_user)):
+    """Delete a scheduled message"""
+    msg = col_scheduled_messages.find_one({"id": message_id})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Scheduled message not found")
+    if msg.get("from_user_id") != cu["user_id"]:
+        raise HTTPException(status_code=403, detail="Cannot delete another user's scheduled message")
+
+    col_scheduled_messages.delete_one({"id": message_id})
+    if msg.get("file_url"):
+        threading.Thread(target=_cloudinary_delete, args=(msg["file_url"],), daemon=True).start()
+    return {"ok": True}
+
+@app.put("/api/messages/scheduled/{message_id}")
+async def update_scheduled_message(
+    message_id: int,
+    message: str = Form(""),
+    scheduled_time: str = Form(...),
+    cu: dict = Depends(get_current_user)
+):
+    """Update a scheduled message"""
+    msg = col_scheduled_messages.find_one({"id": message_id})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Scheduled message not found")
+    if msg.get("from_user_id") != cu["user_id"]:
+        raise HTTPException(status_code=403, detail="Cannot update another user's scheduled message")
+
+    scheduled_dt = datetime.fromisoformat(scheduled_time.replace('Z', '+00:00'))
+    if scheduled_dt <= datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Scheduled time must be in the future")
+
+    col_scheduled_messages.update_one(
+        {"id": message_id},
+        {"$set": {
+            "message": message,
+            "scheduled_time": scheduled_dt.isoformat() + "Z"
+        }}
+    )
     return {"ok": True}
 
 @app.get("/api/messages/{room}")
