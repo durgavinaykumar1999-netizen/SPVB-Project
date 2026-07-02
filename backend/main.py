@@ -1812,13 +1812,13 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
         ws_manager.disconnect(str(user_id), websocket)
         # Only mark offline when ALL tabs/devices have disconnected
         if not ws_manager.is_connected(str(user_id)):
-            mdb_set_status(user_id, from_user[0], from_user[1], "offline")
+            mdb_set_status(user_id, username, email, "offline")
             last_seen_now = datetime.utcnow().isoformat() + "Z"
             await ws_manager.broadcast_all({"type": "user_status", "user_id": user_id, "status": "offline", "last_seen": last_seen_now})
     except Exception:
         ws_manager.disconnect(str(user_id), websocket)
         if not ws_manager.is_connected(str(user_id)):
-            mdb_set_status(user_id, from_user[0], from_user[1], "offline")
+            mdb_set_status(user_id, username, email, "offline")
             last_seen_now = datetime.utcnow().isoformat() + "Z"
             await ws_manager.broadcast_all({"type": "user_status", "user_id": user_id, "status": "offline", "last_seen": last_seen_now})
 
@@ -2161,6 +2161,13 @@ def google_login(req: GoogleAuthRequest, request: Request):
             username = f"{base}{counter}"; counter += 1
         user = {"id": uid, "username": username, "email": email, "password": "", "has_password": False, "role": "user", "created_at": datetime.utcnow().isoformat() + "Z", "google_id": gd.get("sub"), "avatar_url": picture, "display_name": name, "phone": ""}
         mdb_save_user(user)
+    else:
+        # Security: if user exists with password, prevent OAuth takeover
+        if user.get("password") and user.get("has_password"):
+            raise HTTPException(
+                status_code=403,
+                detail="This email is registered with a password. Please log in with your password instead."
+            )
 
     mdb_record_login(user["id"], user["username"], email, "google", user.get("role", "user"))
     session_id = str(_uuid.uuid4())
