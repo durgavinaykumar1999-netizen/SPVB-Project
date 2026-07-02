@@ -1733,6 +1733,16 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
             if not target:
                 continue
             msg_type = data.get("type", "")
+
+            # Check if target has blocked the sender
+            if msg_type == "chat_message":
+                target_id = _safe_int(target)
+                if target_id:
+                    blocked = mdb_get_blocked(target)
+                    if user_id in [str(b) for b in blocked]:
+                        # Silently ignore message from blocked user
+                        continue
+
             await ws_manager.send(target, {**data, "from": str(user_id)})
             target_online = ws_manager.is_connected(target)
 
@@ -2269,10 +2279,14 @@ def get_contacts(cu: dict = Depends(get_current_user)):
     users = mdb_get_users(_contact_proj)
     user_status = mdb_get_user_status()
     my_nicknames = mdb_get_nicknames(str(cu["user_id"]))
+    blocked = mdb_get_blocked(str(cu["user_id"]))  # Get list of blocked user IDs
     now = datetime.utcnow()
     result = []
     for u in users:
         if u["id"] == cu["user_id"]:
+            continue
+        # Hide blocked users from contact list
+        if u["id"] in blocked:
             continue
         uid_str = str(u["id"])
         st = user_status.get(uid_str)
@@ -2692,6 +2706,13 @@ def admin_impersonate(user_id: int, cu: dict = Depends(get_current_user)):
 
 @app.post("/api/messages")
 async def create_message(msg: MessageRequest, cu: dict = Depends(get_current_user)):
+    # Check if recipient has blocked the sender
+    if msg.recipient_id:
+        blocked = mdb_get_blocked(str(msg.recipient_id))
+        if cu["user_id"] in blocked:
+            # Silently reject message from blocked user
+            raise HTTPException(status_code=403, detail="You have been blocked by this user")
+
     _now = datetime.utcnow()
     # Server keeps messages for 30 days max — each client filters by their own retention setting
     _expires = (_now + timedelta(days=30)).isoformat() + "Z"
