@@ -1330,7 +1330,14 @@ if _ALLOWED_ORIGINS:
     _origins = [o.strip() for o in _ALLOWED_ORIGINS.split(",")]
     _origin_regex = r"https://.*\.vercel\.app"
 else:
-    _origins = ["*"]
+    # Allow localhost and all origins for development/testing
+    _origins = [
+        "http://localhost:1402",
+        "http://127.0.0.1:1402",
+        "http://localhost:1403",
+        "http://127.0.0.1:1403",
+        "*"
+    ]
     _origin_regex = None
 
 app.add_middleware(GZipMiddleware, minimum_size=512)
@@ -2780,12 +2787,15 @@ async def schedule_message(
 @app.get("/api/messages/scheduled")
 def get_scheduled_messages(contact_id: int, cu: dict = Depends(get_current_user)):
     """Get all scheduled messages for a contact"""
-    messages = list(col_scheduled_messages.find({
-        "from_user_id": cu["user_id"],
-        "contact_id": contact_id,
-        "sent": False
-    }).sort("scheduled_time", ASCENDING))
-    return {"scheduled_messages": messages}
+    try:
+        messages = list(col_scheduled_messages.find({
+            "from_user_id": cu["user_id"],
+            "contact_id": contact_id,
+            "sent": False
+        }).sort("scheduled_time", ASCENDING))
+        return {"scheduled_messages": messages}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching scheduled messages: {str(e)}")
 
 @app.delete("/api/messages/scheduled/{message_id}")
 async def delete_scheduled_message(message_id: int, cu: dict = Depends(get_current_user)):
