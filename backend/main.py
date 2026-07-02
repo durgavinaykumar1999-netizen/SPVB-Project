@@ -1018,21 +1018,40 @@ def _process_scheduled_messages():
 
             for msg in messages:
                 try:
+                    # Check if recipient has blocked sender
+                    blocked = mdb_get_blocked(str(msg["contact_id"]))
+                    if str(msg["from_user_id"]) in [str(b) for b in blocked]:
+                        # Silently skip — mark as sent so it doesn't retry
+                        col_scheduled_messages.update_one(
+                            {"id": msg["id"]},
+                            {"$set": {"sent": True, "skipped_reason": "blocked"}}
+                        )
+                        continue
+
                     # Create actual message in the messages collection
                     sender = col_users.find_one({"id": msg["from_user_id"]})
                     if not sender:
                         continue
 
+                    now_iso = datetime.utcnow().isoformat() + "Z"
+                    expires_iso = (datetime.utcnow() + timedelta(days=7)).isoformat() + "Z"
+                    room = f"dm_{min(msg['from_user_id'], msg['contact_id'])}_{max(msg['from_user_id'], msg['contact_id'])}"
+
                     actual_msg = {
                         "id": _next_id(col_messages),
                         "from_user_id": msg["from_user_id"],
                         "recipient_id": msg["contact_id"],
-                        "content": msg["message"],
+                        "sender": sender.get("username", ""),
+                        "message": msg["message"],
+                        "room": room,
+                        "timestamp": now_iso,
+                        "created_at": now_iso,
+                        "expires_at": expires_iso,
+                        "is_read": 0,
+                        "status": "sent",
+                        "encrypted": 0,
                         "file_url": msg.get("file_url"),
                         "file_name": msg.get("file_name"),
-                        "created_at": datetime.utcnow().isoformat() + "Z",
-                        "expires_at": (datetime.utcnow() + timedelta(days=90)).isoformat() + "Z",
-                        "encrypted": False,
                     }
                     col_messages.insert_one(actual_msg)
 
@@ -2788,11 +2807,11 @@ async def schedule_message(
 def get_scheduled_messages(contact_id: int, cu: dict = Depends(get_current_user)):
     """Get all scheduled messages for a contact"""
     try:
-        messages = list(col_scheduled_messages.find({
+        messages = [_strip_id(dict(m)) for m in col_scheduled_messages.find({
             "from_user_id": cu["user_id"],
             "contact_id": contact_id,
             "sent": False
-        }).sort("scheduled_time", ASCENDING))
+        }).sort("scheduled_time", ASCENDING)]
         return {"scheduled_messages": messages}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching scheduled messages: {str(e)}")
