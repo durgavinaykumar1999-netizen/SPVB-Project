@@ -255,7 +255,9 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   const tabSwipeStartY = useRef(null)
   const TABS = ['chats', 'status', 'calls', 'mail']
   const [showSettings, setShowSettings] = useState(false)
-  const [settingsPage, setSettingsPage] = useState(null) // null|'account'|'chats'|'notifications'|'privacy'|'help'|'devices'|'storage'
+  const [settingsPage, setSettingsPage] = useState(null) // null|'account'|'chats'|'notifications'|'privacy'|'blocked'|'help'|'devices'|'storage'
+  const [blockedUsers, setBlockedUsers] = useState([])
+  const [blockedUsersCount, setBlockedUsersCount] = useState(0)
   const [showSwitchAccountDropdown, setShowSwitchAccountDropdown] = useState(false)
   const [onlineMap, setOnlineMap] = useState({})
   const lastSeenRef = useRef({}) // tracks last time each user was seen online (locally observed)
@@ -3726,7 +3728,20 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     } catch {}
   }
 
+  const fetchBlockedUsers = async () => {
+    const token = localStorage.getItem('token')
+    try {
+      const res = await fetch(apiUrl('/api/contacts/blocked'), { headers: { Authorization: `Bearer ${token}` } })
+      if (res.ok) {
+        const data = await res.json()
+        setBlockedUsers(data)
+        setBlockedUsersCount(data.length)
+      }
+    } catch {}
+  }
+
   useEffect(() => { if (settingsPage === 'devices') fetchLinkedDevices() }, [settingsPage]) // eslint-disable-line
+  useEffect(() => { if (settingsPage === 'blocked') fetchBlockedUsers() }, [settingsPage]) // eslint-disable-line
   // Stop any preview audio when navigating away from notifications settings
   useEffect(() => {
     if (settingsPage !== 'notifications') {
@@ -7394,7 +7409,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
               </button>
               <span style={{ color: dm.text, fontSize: 19, fontWeight: 700, letterSpacing: '-0.2px' }}>
-                {settingsPage === 'account' ? 'Account' : settingsPage === 'chats' ? 'Chats' : settingsPage === 'notifications' ? 'Notifications' : settingsPage === 'privacy' ? 'Privacy' : settingsPage === 'help' ? 'Help' : settingsPage === 'devices' ? 'Linked Devices' : settingsPage === 'storage' ? 'Storage and Data' : 'Settings'}
+                {settingsPage === 'account' ? 'Account' : settingsPage === 'chats' ? 'Chats' : settingsPage === 'notifications' ? 'Notifications' : settingsPage === 'privacy' ? 'Privacy' : settingsPage === 'blocked' ? 'Blocked Users' : settingsPage === 'help' ? 'Help' : settingsPage === 'devices' ? 'Linked Devices' : settingsPage === 'storage' ? 'Storage and Data' : 'Settings'}
               </span>
             </div>
 
@@ -7423,6 +7438,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                   {[
                     { key: 'account',       icon: '👤', color: '#5c9ded', label: 'Account',          sub: 'Security notifications, change number' },
                     { key: 'privacy',       icon: '🔒', color: '#25d366', label: 'Privacy',           sub: showLastSeen ? 'Last seen: everyone' : 'Last seen: nobody' },
+                    { key: 'blocked',       icon: '🚫', color: '#ef4444', label: 'Blocked Users',     sub: blockedUsersCount > 0 ? `${blockedUsersCount} blocked` : 'No one blocked' },
                     { key: 'chats',         icon: '💬', color: '#fbbf24', label: 'Chats',             sub: 'Theme, wallpaper, chat history' },
                     { key: 'notifications', icon: '🔔', color: '#f97316', label: 'Notifications',     sub: notifEnabled ? (notifSound ? 'On · Sound on' : 'On · Silent') : 'Off' },
                     { key: 'storage',       icon: '📦', color: '#8b5cf6', label: 'Storage and Data',  sub: 'Network usage, auto-download' },
@@ -8257,6 +8273,96 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={dm.subtext} strokeWidth="2"><path d="m9 18 6-6-6-6"/></svg>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* Blocked Users sub-page */}
+              {settingsPage === 'blocked' && (
+                <div style={{ padding: '8px 0', background: dm.settingsBg }}>
+                  <div style={{ margin: '8px 16px 6px', color: dm.subtext, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+                    Blocked Contacts
+                  </div>
+                  {blockedUsers.length === 0 ? (
+                    <div style={{ background: dm.panel, padding: '40px 20px', textAlign: 'center', borderRadius: 12 }}>
+                      <div style={{ fontSize: 24, marginBottom: 8 }}>✅</div>
+                      <div style={{ color: dm.text, fontWeight: 500, marginBottom: 4 }}>No blocked contacts</div>
+                      <div style={{ color: dm.subtext, fontSize: 12 }}>You haven't blocked anyone</div>
+                    </div>
+                  ) : (
+                    <div style={{ background: dm.panel, borderRadius: 12, overflow: 'hidden' }}>
+                      {blockedUsers.map((user, idx) => (
+                        <div
+                          key={user.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 12,
+                            padding: '14px 16px',
+                            borderBottom: idx < blockedUsers.length - 1 ? `1px solid ${dm.border}` : 'none',
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: 44,
+                              height: 44,
+                              borderRadius: '50%',
+                              background: user.avatar_url ? `url('${user.avatar_url}')` : '#ddd',
+                              backgroundSize: 'cover',
+                              backgroundPosition: 'center',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              color: '#fff',
+                              fontWeight: 600,
+                              fontSize: 14,
+                              flexShrink: 0,
+                            }}
+                          >
+                            {!user.avatar_url && (user.display_name || user.username)[0].toUpperCase()}
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ color: dm.text, fontWeight: 500, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {user.display_name || user.username}
+                            </div>
+                            <div style={{ color: dm.subtext, fontSize: 12, marginTop: 1 }}>
+                              @{user.username}
+                            </div>
+                          </div>
+                          <button
+                            onClick={async () => {
+                              const token = localStorage.getItem('token')
+                              try {
+                                const res = await fetch(apiUrl(`/api/contacts/${user.id}/block`), {
+                                  method: 'DELETE',
+                                  headers: { Authorization: `Bearer ${token}` }
+                                })
+                                if (res.ok) {
+                                  setBlockedUsers(blockedUsers.filter(u => u.id !== user.id))
+                                  setBlockedUsersCount(Math.max(0, blockedUsersCount - 1))
+                                }
+                              } catch (err) {
+                                alert('Error unblocking user: ' + err.message)
+                              }
+                            }}
+                            style={{
+                              padding: '7px 14px',
+                              background: 'rgba(239, 68, 68, 0.12)',
+                              border: '1px solid rgba(239, 68, 68, 0.25)',
+                              borderRadius: 8,
+                              color: '#ef4444',
+                              fontSize: 12,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              fontFamily: 'inherit',
+                              flexShrink: 0,
+                            }}
+                          >
+                            Unblock
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
