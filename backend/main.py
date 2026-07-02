@@ -1005,9 +1005,55 @@ async def _periodic_cleanup():
         await asyncio.sleep(5 * 60)  # Every 5 minutes (was 30 min)
         _run_cleanup()
 
+def _process_scheduled_messages():
+    """Background job to send scheduled messages at their scheduled time"""
+    while True:
+        try:
+            now = datetime.now(datetime.now().astimezone().tzinfo)
+            # Find messages ready to send
+            messages = list(col_scheduled_messages.find({
+                "scheduled_time": {"$lte": now.isoformat()},
+                "sent": False
+            }))
+
+            for msg in messages:
+                try:
+                    # Create actual message in the messages collection
+                    sender = col_users.find_one({"id": msg["from_user_id"]})
+                    if not sender:
+                        continue
+
+                    actual_msg = {
+                        "id": _next_id(col_messages),
+                        "from_user_id": msg["from_user_id"],
+                        "recipient_id": msg["contact_id"],
+                        "content": msg["message"],
+                        "file_url": msg.get("file_url"),
+                        "file_name": msg.get("file_name"),
+                        "created_at": datetime.utcnow().isoformat() + "Z",
+                        "expires_at": (datetime.utcnow() + timedelta(days=90)).isoformat() + "Z",
+                        "encrypted": False,
+                    }
+                    col_messages.insert_one(actual_msg)
+
+                    # Mark scheduled message as sent
+                    col_scheduled_messages.update_one(
+                        {"id": msg["id"]},
+                        {"$set": {"sent": True}}
+                    )
+                    print(f"[SCHEDULED] Sent message {msg['id']} from {msg['from_user_id']} to {msg['contact_id']}")
+                except Exception as e:
+                    print(f"[SCHEDULED] Error processing message {msg.get('id')}: {e}")
+        except Exception as e:
+            print(f"[SCHEDULED] Background job error: {e}")
+
+        time.sleep(60)  # Check every minute
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     asyncio.create_task(_periodic_cleanup())
+    # Start scheduled message background job in a thread
+    threading.Thread(target=_process_scheduled_messages, daemon=True).start()
     yield
 
 app = FastAPI(title="SPVB API", version="1.3.0", lifespan=lifespan)
