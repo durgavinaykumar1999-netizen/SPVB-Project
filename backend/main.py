@@ -1811,13 +1811,13 @@ async def ws_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
         ws_manager.disconnect(str(user_id), websocket)
         # Only mark offline when ALL tabs/devices have disconnected
         if not ws_manager.is_connected(str(user_id)):
-            mdb_set_status(user_id, from_user[0], from_user[1], "offline")
+            mdb_set_status(user_id, username, email, "offline")
             last_seen_now = datetime.utcnow().isoformat() + "Z"
             await ws_manager.broadcast_all({"type": "user_status", "user_id": user_id, "status": "offline", "last_seen": last_seen_now})
     except Exception:
         ws_manager.disconnect(str(user_id), websocket)
         if not ws_manager.is_connected(str(user_id)):
-            mdb_set_status(user_id, from_user[0], from_user[1], "offline")
+            mdb_set_status(user_id, username, email, "offline")
             last_seen_now = datetime.utcnow().isoformat() + "Z"
             await ws_manager.broadcast_all({"type": "user_status", "user_id": user_id, "status": "offline", "last_seen": last_seen_now})
 
@@ -2150,6 +2150,14 @@ def google_login(req: GoogleAuthRequest, request: Request):
 
     user = mdb_get_user_by_email(email)
     is_new_user = False
+
+    # ✅ Reject Google login if user has a password account (prevents account takeover)
+    if user and user.get("has_password"):
+        raise HTTPException(
+            status_code=403,
+            detail="This email is registered with a password. Please log in with your password."
+        )
+
     if not user:
         is_new_user = True
         uid = _next_id(col_users)
