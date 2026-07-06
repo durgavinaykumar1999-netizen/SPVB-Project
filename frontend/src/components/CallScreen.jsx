@@ -607,19 +607,48 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
   const switchCamera = async () => {
     const newFacing = facingMode === 'user' ? 'environment' : 'user'
     try {
-      const newStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: newFacing }, audio: false })
-      const newVT = newStream.getVideoTracks()[0]
+      console.log(`[camera] Switching from ${facingMode} to ${newFacing}...`)
 
-      // Update WebRTC sender so remote peer sees new camera
+      // Get new video stream with audio for proper audio sync
+      const newFullStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: newFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: true
+      })
+      const newVT = newFullStream.getVideoTracks()[0]
+      if (!newVT) throw new Error('No video track received')
+
+      console.log(`[camera] ✓ Got new ${newFacing} video track`)
+
+      // Update WebRTC sender so remote peer sees new camera immediately
       const sender = pcRef.current?.getSenders().find(s => s.track?.kind === 'video')
-      if (sender) await sender.replaceTrack(newVT)
+      if (sender) {
+        await sender.replaceTrack(newVT)
+        console.log('[camera] ✓ Replaced WebRTC video track - remote peer sees new camera')
+      }
 
-      if (rawVideoElRef.current) { rawVideoElRef.current.srcObject = new MediaStream([newVT]); rawVideoElRef.current.play().catch(() => {}) }
-      localStreamRef.current?.getVideoTracks().forEach(t => t.stop())
-      const audio = localStreamRef.current?.getAudioTracks() || []
-      localStreamRef.current = new MediaStream([...audio, newVT])
+      // Update effects rendering pipeline
+      if (rawVideoElRef.current) {
+        rawVideoElRef.current.srcObject = newFullStream
+        rawVideoElRef.current.play().catch(() => {})
+        console.log('[camera] ✓ Updated effects pipeline')
+      }
+
+      // Stop old video tracks
+      localStreamRef.current?.getVideoTracks().forEach(t => { t.stop(); console.log('[camera] Stopped old video track') })
+
+      // Keep audio tracks from old stream (to avoid audio cut-off)
+      const oldAudio = localStreamRef.current?.getAudioTracks() || []
+      const newAudio = newFullStream.getAudioTracks()
+
+      // Update local stream with new video + both old and new audio
+      localStreamRef.current = new MediaStream([...oldAudio, ...newAudio, newVT])
+
       setFacingMode(newFacing)
-    } catch (err) { console.error('Camera switch failed:', err) }
+      console.log(`[camera] ✓ Camera switched to ${newFacing} successfully`)
+    } catch (err) {
+      console.error('[camera] ❌ Camera switch failed:', err.message)
+      alert(`Camera flip failed: ${err.message}. Make sure your device has multiple cameras.`)
+    }
   }
 
   // ── PiP drag ───────────────────────────────────────────────────────────────
@@ -692,10 +721,11 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
       {type === 'video' && (
         <>
           {/* Video element - optimized for speed and clarity */}
-          <video ref={remoteVideoRef} autoPlay playsInline
+          <video ref={remoteVideoRef} autoPlay playsInline muted={false}
             style={{ position:'fixed', inset:0, width:'100%', height:'100%', objectFit:'cover',
                      background:'#000', zIndex: 2000,
                      visibility: minimized ? 'hidden' : 'visible',
+                     display: minimized ? 'none' : 'block',
                      pointerEvents: 'none',
                      // Optimize for performance
                      WebkitUserSelect: 'none',
@@ -819,9 +849,9 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
         {/* Gradient overlays */}
         <div style={{ position:'absolute', inset:0, background:'linear-gradient(to bottom, rgba(0,0,0,0.58) 0%, transparent 32%, transparent 52%, rgba(0,0,0,0.72) 100%)', pointerEvents:'none', zIndex:2 }}/>
 
-        {/* Local PiP self-view (only in full-screen, tap for effects) */}
+        {/* Local PiP self-view (only in full-screen, tap for effects) - Mobile responsive */}
         {type === 'video' && (
-          <div style={{ position:'absolute', top:72, right:14, width:108, height:148, borderRadius:16, overflow:'hidden', border:`2px solid ${hasEffect?'rgba(255,255,255,0.55)':'rgba(255,255,255,0.22)'}`, boxShadow:'0 6px 28px rgba(0,0,0,0.65)', zIndex:10, cursor:'pointer' }}
+          <div style={{ position:'absolute', top:'clamp(14px, 5vw, 72px)', right:'clamp(8px, 3vw, 14px)', width:'clamp(80px, 20vw, 108px)', height:'clamp(110px, 27vw, 148px)', borderRadius:16, overflow:'hidden', border:`2px solid ${hasEffect?'rgba(255,255,255,0.55)':'rgba(255,255,255,0.22)'}`, boxShadow:'0 6px 28px rgba(0,0,0,0.65)', zIndex:10, cursor:'pointer' }}
             onClick={()=>setShowEffects(p=>!p)}>
             {videoOff
               ? <div style={{ width:'100%', height:'100%', background:'#1a2535', display:'flex', alignItems:'center', justifyContent:'center' }}><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="1.5"><line x1="1" y1="1" x2="23" y2="23"/><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h2a2 2 0 0 1 2 2v9.34"/></svg></div>
@@ -832,19 +862,21 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
           </div>
         )}
 
-        {/* Minimize button */}
+        {/* Minimize button - Mobile responsive */}
         {onMinimize && (
-          <button onClick={onMinimize} style={{ position:'absolute', top:14, left:14, zIndex:20, background:'rgba(0,0,0,0.42)', border:'none', borderRadius:20, padding:'6px 13px', color:'#fff', fontSize:13, cursor:'pointer', display:'flex', alignItems:'center', gap:5, backdropFilter:'blur(6px)' }}>
+          <button onClick={onMinimize} style={{ position:'absolute', top:'clamp(8px, 2vw, 14px)', left:'clamp(8px, 2vw, 14px)', zIndex:20, background:'rgba(0,0,0,0.42)', border:'none', borderRadius:20, padding:'6px 12px', color:'#fff', fontSize:'clamp(11px, 2vw, 13px)', cursor:'pointer', display:'flex', alignItems:'center', gap:5, backdropFilter:'blur(6px)', maxWidth:'25vw' }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="18 15 12 9 6 15"/></svg>
-            Chat
+            <span style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>Chat</span>
           </button>
         )}
 
-        {/* Connection quality */}
+        {/* Connection quality - Mobile responsive */}
         {connQuality !== 'good' && (
-          <div style={{ position:'absolute', top:14, right:14, zIndex:20, background: connQuality==='poor'?'rgba(243,156,18,0.9)':'rgba(229,57,53,0.9)', borderRadius:20, padding:'5px 12px', color:'#fff', fontSize:12, fontWeight:600, display:'flex', alignItems:'center', gap:5 }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="white"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13" stroke="white" strokeWidth="2"/><line x1="12" y1="17" x2="12.01" y2="17" stroke="white" strokeWidth="2"/></svg>
-            {connQuality==='poor'?'Poor connection':'🔄 Reconnecting…'}
+          <div style={{ position:'absolute', top:'clamp(8px, 2vw, 14px)', right:'clamp(8px, 2vw, 14px)', zIndex:20, background: connQuality==='poor'?'rgba(243,156,18,0.9)':'rgba(229,57,53,0.9)', borderRadius:20, padding:'5px 10px', color:'#fff', fontSize:'clamp(10px, 1.8vw, 12px)', fontWeight:600, display:'flex', alignItems:'center', gap:4, maxWidth:'40vw' }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="white"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13" stroke="white" strokeWidth="2"/><line x1="12" y1="17" x2="12.01" y2="17" stroke="white" strokeWidth="2"/></svg>
+            <span style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+              {connQuality==='poor'?'Poor connection':'🔄 Reconnecting…'}
+            </span>
           </div>
         )}
 
@@ -909,34 +941,44 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
           </div>
         )}
 
-        {/* Controls row */}
+        {/* Controls row - Mobile Optimized: Mute, Speaker, Video, Menu, End Call */}
         <div style={{ position:'relative', zIndex:10, padding:'14px 0 44px', display:'flex', alignItems:'center', justifyContent:'center', gap:14, flexWrap:'wrap' }}>
+          {/* Mute button */}
           {ctrlBtn(toggleMute, muted,
             muted
               ? <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
               : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>,
             muted?'Unmute':'Mute')}
 
+          {/* Speaker button */}
           {ctrlBtn(toggleSpeaker, !speakerOn,
             !speakerOn
               ? <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="15.54" y1="8.46" x2="15.54" y2="15.54"/><path d="M1 1l22 22"/></svg>
               : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a6.5 6.5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>,
             speakerOn?'Speaker On':'Mute Speaker')}
 
-          {/* Three-dot menu button */}
+          {/* Video Off button - for video calls */}
+          {type==='video' && ctrlBtn(toggleVideo, videoOff,
+            videoOff
+              ? <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h2a2 2 0 0 1 2 2v9.34"/></svg>
+              : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>,
+            videoOff?'Cam Off':'Camera')}
+
+          {/* Three-dot menu button - Contains: Effects, Noise Cancel, Flip Camera, Audio Info */}
           <div style={{ position:'relative' }}>
             <button onClick={() => setShowMenu(!showMenu)}
               style={{ width:56, height:56, borderRadius:'50%', border:'none', cursor:'pointer', background: showMenu?'#00a884':'rgba(255,255,255,0.14)', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', backdropFilter:'blur(12px)', transition:'all 0.2s' }}
               onMouseEnter={e=>e.currentTarget.style.transform='scale(1.07)'}
               onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}
+              title="More options"
             >
               <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
             </button>
 
-            {/* Dropdown menu */}
+            {/* Dropdown menu - All additional options */}
             {showMenu && (
-              <div style={{ position:'absolute', bottom:'70px', right:0, background:'rgba(20,30,48,0.98)', backdropFilter:'blur(12px)', borderRadius:12, border:'1px solid rgba(255,255,255,0.1)', minWidth:220, boxShadow:'0 8px 32px rgba(0,0,0,0.4)', zIndex:2005 }}>
-                {/* Effects option */}
+              <div style={{ position:'absolute', bottom:'70px', right:0, background:'rgba(20,30,48,0.98)', backdropFilter:'blur(12px)', borderRadius:12, border:'1px solid rgba(255,255,255,0.1)', minWidth:220, boxShadow:'0 8px 32px rgba(0,0,0,0.4)', zIndex:2005, maxHeight:'80vh', overflowY:'auto' }}>
+                {/* Effects option - Video calls only */}
                 {type === 'video' && (
                   <button onClick={() => { setShowEffects(true); setShowMenu(false) }}
                     style={{ width:'100%', padding:'12px 16px', border:'none', background:'none', color:'#fff', fontSize:14, textAlign:'left', cursor:'pointer', display:'flex', alignItems:'center', gap:12, transition:'background 0.2s' }}
@@ -958,7 +1000,7 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
                   <div><div style={{ fontWeight:600 }}>{noiseCancelOn ? 'Noise Cancel ON' : 'Noise Cancel OFF'}</div><div style={{ fontSize:11, color:'rgba(255,255,255,0.6)' }}>{noiseCancelOn ? 'Clear voice in noisy places' : 'Click to enable'}</div></div>
                 </button>
 
-                {/* Camera Flip option */}
+                {/* Camera Flip option - Video calls only */}
                 {type === 'video' && (
                   <button onClick={() => { switchCamera(); setShowMenu(false) }}
                     style={{ width:'100%', padding:'12px 16px', border:'none', background:'none', color:'#fff', fontSize:14, textAlign:'left', cursor:'pointer', display:'flex', alignItems:'center', gap:12, transition:'background 0.2s', borderTop:'1px solid rgba(255,255,255,0.1)' }}
@@ -966,7 +1008,7 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
                     onMouseLeave={e => e.currentTarget.style.background = 'none'}
                   >
                     <span style={{ fontSize:18 }}>📱</span>
-                    <div><div style={{ fontWeight:600 }}>Flip Camera</div><div style={{ fontSize:11, color:'rgba(255,255,255,0.6)' }}>Switch between cameras</div></div>
+                    <div><div style={{ fontWeight:600 }}>Flip Camera</div><div style={{ fontSize:11, color:'rgba(255,255,255,0.6)' }}>Switch cameras</div></div>
                   </button>
                 )}
 
@@ -974,37 +1016,14 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
                 <div style={{ padding:'12px 16px', borderTop:'1px solid rgba(255,255,255,0.1)', fontSize:11, color:'rgba(255,255,255,0.6)' }}>
                   <div>🎙️ Audio Quality</div>
                   <div style={{ marginTop:4, color:'rgba(0,168,132,0.8)' }}>✓ 48kHz High Quality</div>
-                  <div style={{ marginTop:2 }}>✓ Echo Cancellation Active</div>
-                  <div>✓ Auto Gain Control</div>
+                  <div style={{ marginTop:2 }}>✓ Echo Cancellation</div>
+                  <div>✓ Noise Suppression</div>
                 </div>
               </div>
             )}
           </div>
 
-          {type==='video' && ctrlBtn(toggleVideo, videoOff,
-            videoOff
-              ? <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h2a2 2 0 0 1 2 2v9.34"/></svg>
-              : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>,
-            videoOff?'Cam Off':'Camera')}
-
-          {type==='video' && (
-            <div style={{ textAlign:'center' }}>
-              <button onClick={()=>setShowEffects(p=>!p)} style={{ width:56, height:56, borderRadius:'50%', border:'none', cursor:'pointer', background: showEffects?'#00a884': hasEffect?'rgba(0,168,132,0.28)':'rgba(255,255,255,0.14)', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', backdropFilter:'blur(12px)', transition:'all 0.2s', boxShadow: hasEffect&&!showEffects?'0 0 0 2px #00a884': showEffects?'0 4px 20px rgba(0,168,132,0.55)':'none' }}
-                onMouseEnter={e=>e.currentTarget.style.transform='scale(1.07)'}
-                onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}
-              >
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M15 9h0"/><path d="M17.8 6.2 19 5"/><path d="m3 21 9-9"/><path d="M12.2 6.2 11 5"/>
-                </svg>
-              </button>
-              <div style={{ color:'rgba(255,255,255,0.65)', fontSize:11, marginTop:6, fontWeight:500 }}>Effects</div>
-            </div>
-          )}
-
-          {type==='video' && ctrlBtn(switchCamera, false,
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10"/><path d="M3.51 15a9 9 0 0 0 14.85 3.36L23 14"/></svg>,
-            'Flip')}
-
+          {/* End Call button */}
           {ctrlBtn(endCall, false,
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.42 19.42 0 0 1 4.44 9.46a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.35 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.5 9.9"/><line x1="1" y1="1" x2="23" y2="23"/></svg>,
             'End', true, true)}

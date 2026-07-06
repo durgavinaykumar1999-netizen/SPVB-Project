@@ -5965,29 +5965,8 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                         typingThrottleRef.current = setTimeout(() => { typingThrottleRef.current = null }, 2000)
                       }
                     }} onKeyDown={e => { if (e.key === 'Escape') { setShowMentionList(false) }; handleKey(e) }} onFocus={() => setShowAttachMenu(false)} />
-                    {/* Schedule button — hidden on mobile to save space */}
-                    <button className="wa-schedule-btn" title="Schedule message" onClick={() => setShowScheduler(p => !p)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', color: showScheduler ? themeColor : '#8696a0', display: 'flex', borderRadius: 4, flexShrink: 0 }}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                    </button>
                   </div>
-                  {/* Schedule picker — fixed so it's never clipped on mobile */}
-                  {showScheduler && (
-                    <div style={{ position: 'fixed', inset: 0, zIndex: 400, display: 'flex', alignItems: 'flex-end' }} onClick={() => setShowScheduler(false)}>
-                      <div style={{ width: '100%', background: '#1e2d35', borderRadius: '20px 20px 0 0', padding: '20px 16px max(20px, env(safe-area-inset-bottom))', boxShadow: '0 -8px 32px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', gap: 14 }}
-                        onClick={e => e.stopPropagation()}>
-                        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 4 }}>
-                          <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(134,150,160,0.3)' }} />
-                        </div>
-                        <div style={{ color: '#e9edef', fontSize: 15, fontWeight: 600 }}>Schedule Message</div>
-                        <input type="datetime-local" value={scheduleTime} onChange={e => setScheduleTime(e.target.value)} min={new Date().toISOString().slice(0, 16)} style={{ background: '#2a3942', border: '1px solid rgba(134,150,160,0.2)', borderRadius: 10, padding: '10px 14px', color: '#e9edef', fontSize: 14, fontFamily: 'inherit', outline: 'none', width: '100%' }} />
-                        <div style={{ display: 'flex', gap: 10 }}>
-                          <button onClick={() => setShowScheduler(false)} style={{ flex: 1, padding: '12px', background: 'none', border: '1px solid rgba(134,150,160,0.2)', borderRadius: 10, color: '#8696a0', cursor: 'pointer', fontSize: 14, fontFamily: 'inherit', fontWeight: 600 }}>Cancel</button>
-                          <button onClick={scheduleMessage} disabled={!scheduleTime || !input.trim()} style={{ flex: 1, padding: '12px', background: themeGradient, border: 'none', borderRadius: 10, color: '#fff', cursor: 'pointer', fontSize: 14, fontFamily: 'inherit', fontWeight: 600, opacity: (!scheduleTime || !input.trim()) ? 0.5 : 1 }}>Schedule</button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  <button className="wa-send-btn" onClick={() => { setShowAttachMenu(false); setShowScheduler(false); if (input.trim()) sendMessage(); else startRecording() }} style={{ background: themeGradient }}>
+                  <button className="wa-send-btn" onClick={() => { setShowAttachMenu(false); if (input.trim()) sendMessage(); else startRecording() }} style={{ background: themeGradient }}>
                     {input.trim()
                       ? <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
                       : <svg viewBox="0 0 24 24" fill="white" width="22" height="22"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.31 6-6.72h-1.7z"/></svg>}
