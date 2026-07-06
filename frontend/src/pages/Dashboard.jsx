@@ -5,6 +5,10 @@
 
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { CiChat1 } from 'react-icons/ci'
+import { LuCircleDashed } from 'react-icons/lu'
+import { MdCall } from 'react-icons/md'
+import { IoMdMailOpen } from 'react-icons/io'
 import { silentlyRefreshGoogleTokens, syncContactsWithToken, isGmailTokenValid, storeGmailToken, requestAllGooglePermissions } from '../utils/googleTokens'
 import { wsUrl, apiUrl } from '../utils/api'
 import { getOrCreateKeyPair, encryptMessage, decryptMessage, exportKeyBackup, importKeyBackup, replaceKeyPairFromBackup, deleteStoredKeyPair } from '../utils/e2e'
@@ -3839,13 +3843,22 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
 
   // GIF search using Tenor v2
   const searchGifs = async (query) => {
-    const key = import.meta.env.VITE_TENOR_API_KEY || ''
-    if (!key) { setGifs([]); return }
     setGifLoading(true)
     try {
-      const r = await fetch(`https://tenor.googleapis.com/v2/search?q=${encodeURIComponent(query || 'trending')}&key=${key}&limit=20&media_filter=gif`)
-      if (r.ok) { const d = await r.json(); setGifs(d.results || []) }
-    } catch {} finally { setGifLoading(false) }
+      const r = await fetch(`${apiUrl('/api/gifs/search')}?q=${encodeURIComponent(query || 'trending')}&limit=20`)
+      if (r.ok) {
+        const d = await r.json()
+        const formatted = (d.data || []).map(gif => ({
+          id: gif.id,
+          title: gif.title,
+          media_formats: {
+            gif: { url: gif.images?.fixed_width?.url || '' },
+            tinygif: { url: gif.images?.fixed_height_small?.url || '' }
+          }
+        }))
+        setGifs(formatted)
+      }
+    } catch (err) { console.error('GIF search error:', err) } finally { setGifLoading(false) }
   }
 
   // Create group
@@ -4610,9 +4623,10 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           const totalUnread = Object.values(unreadCounts).reduce((s, v) => s + (v || 0), 0)
           return (
             <div style={{ display: 'flex', background: '#202c33', borderBottom: '1px solid rgba(134,150,160,0.1)' }}>
-              {[{ id: 'chats', label: 'Chats' }, { id: 'status', label: 'Status' }, { id: 'calls', label: 'Calls' }, { id: 'mail', label: '✉ Mail' }].map(({ id, label }) => (
-                <button key={id} onClick={() => { setTab(id); if (id !== 'chats') setShowArchivedList(false) }} style={{ flex: 1, padding: '12px 0', background: 'none', border: 'none', borderBottom: tab === id ? `2px solid ${themeColor}` : '2px solid transparent', color: tab === id ? themeColor : '#8696a0', fontSize: 12, fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                  {label}
+              {[{ id: 'chats', label: 'Chats', icon: CiChat1 }, { id: 'status', label: 'Status', icon: LuCircleDashed }, { id: 'calls', label: 'Calls', icon: MdCall }, { id: 'mail', label: 'Mail', icon: IoMdMailOpen }].map(({ id, label, icon: Icon }) => (
+                <button key={id} onClick={() => { setTab(id); if (id !== 'chats') setShowArchivedList(false) }} style={{ flex: 1, padding: '10px 2px', background: 'none', border: 'none', borderBottom: tab === id ? `2px solid ${themeColor}` : '2px solid transparent', color: tab === id ? themeColor : '#8696a0', fontSize: 11, fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, minWidth: 0, overflow: 'hidden' }}>
+                  <Icon size={14} style={{ flexShrink: 0 }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
                   {id === 'chats' && totalUnread > 0 && tab !== 'chats' && (
                     <span className="wa-tab-badge">{totalUnread > 99 ? '99+' : totalUnread}</span>
                   )}
@@ -6034,7 +6048,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                         <input value={gifSearch} onChange={e => setGifSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && searchGifs(gifSearch)} placeholder="Search GIFs…" style={{ flex: 1, padding: '6px 10px', background: '#2a3942', border: '1px solid rgba(134,150,160,0.2)', borderRadius: 6, color: '#e9edef', fontSize: 12, outline: 'none', fontFamily: 'inherit' }} />
                         <button onClick={() => searchGifs(gifSearch)} style={{ padding: '6px 12px', background: themeGradient, border: 'none', borderRadius: 6, color: 'white', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit' }}>Go</button>
                       </div>
-                      {!tenorKey && <div style={{ padding: '20px', textAlign: 'center', color: '#8696a0', fontSize: 12 }}>Add VITE_TENOR_API_KEY to .env to enable GIFs</div>}
+                      {/* Giphy API enabled with default key */}
                       {gifLoading && <div style={{ padding: 20, textAlign: 'center', color: '#8696a0', fontSize: 12 }}>Loading…</div>}
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, padding: '0 8px 8px', overflowY: 'auto', flex: 1 }}>
                         {gifs.map(g => {
