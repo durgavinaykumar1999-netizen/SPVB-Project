@@ -3328,8 +3328,19 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       })
     } catch {}
 
-    // ── 6. Clear Firebase IndexedDB databases (FCM tokens, installations)
-    //    NEVER delete spvb_e2e — it holds the user's private key and must survive logout
+    // ── 6. Delete E2E encryption private key from IndexedDB
+    // ✅ FIX BUG 11: Safely delete E2E key (restored from server backup on next login)
+    try {
+      if (user?.id) {
+        deleteStoredKeyPair(user.id).catch(e => {
+          console.warn('[logout] Could not clear E2E key:', e)
+        })
+      }
+    } catch (e) {
+      console.warn('[logout] Error in E2E key cleanup:', e)
+    }
+
+    // ── 7. Clear Firebase IndexedDB databases (FCM tokens, installations)
     try {
       const FIREBASE_DBS = ['firebase-installations-database', 'firebase-messaging-database', 'firebaseLocalStorageDb', 'firebase-heartbeat-database']
       indexedDB.databases?.().then(dbs => {
@@ -3341,7 +3352,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       }).catch(() => {})
     } catch {}
 
-    // ── 7. Preserve multi-account data, clear everything else
+    // ── 8. Preserve multi-account data, clear everything else
     const preserve = {}
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i)
