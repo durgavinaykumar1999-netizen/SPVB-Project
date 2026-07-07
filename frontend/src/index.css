@@ -320,7 +320,7 @@ html, body {
 }
 
 .wa-header-icons {
-  display: flex; gap: 4px;
+  display: flex; gap: 12px;
 }
 .wa-icon-btn {
   width: 38px; height: 38px;

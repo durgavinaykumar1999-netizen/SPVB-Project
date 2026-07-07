@@ -256,8 +256,9 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   const [botTyping, setBotTyping] = useState(false)
   const [tab, setTab] = useState('chats')
   const [weather, setWeather] = useState(null)
-  const [weatherLocation, setWeatherLocation] = useState('')
   const [loadingWeather, setLoadingWeather] = useState(false)
+  const [userLat, setUserLat] = useState(12.9716) // Default: Bangalore
+  const [userLng, setUserLng] = useState(77.5946)
   const tabSwipeStartX = useRef(null)
   const tabSwipeStartY = useRef(null)
   const TABS = ['chats', 'status', 'calls', 'mail']
@@ -695,11 +696,9 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       setWeather({
         temp: data.temp,
         emoji: data.emoji,
-        humidity: data.humidity,
         code: data.code
       })
-      setWeatherLocation(data.location)
-      console.log(`[weather] ✅ Display: ${data.emoji} ${data.temp}°C | ${data.location} (Humidity: ${data.humidity}%)`)
+      console.log(`[weather] ✅ Display: ${data.emoji} ${data.temp}°C`)
       setLoadingWeather(false)
     } catch (err) {
       console.error('[weather] ❌ Error fetching weather:', err)
@@ -707,26 +706,29 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     }
   }, [])
 
-  // Fetch weather ONCE on mount (preserve Pirate Weather 10k/month quota)
-  // No auto-refresh - only fetch on manual user action or initial load
+  // Fetch weather ONCE on mount with user's actual location (or Bangalore fallback)
   useEffect(() => {
-    let userLat = localStorage.getItem('user_lat')
-    let userLng = localStorage.getItem('user_lng')
-
-    // If no stored location, use default (New Delhi, India)
-    if (!userLat || !userLng) {
-      userLat = '28.7041'
-      userLng = '77.1025'
-      console.log('[weather] Using default location (New Delhi) - user location not yet set')
+    if (navigator.geolocation) {
+      console.log('[weather] Requesting user geolocation...')
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          const lat = pos.coords.latitude
+          const lng = pos.coords.longitude
+          console.log(`[weather] Got location: ${lat}, ${lng}`)
+          setUserLat(lat)
+          setUserLng(lng)
+          fetchWeather(lat, lng)
+        },
+        err => {
+          console.log('[weather] Geolocation denied, using Bangalore fallback:', err.message)
+          fetchWeather(12.9716, 77.5946)
+        }
+      )
     } else {
-      console.log('[weather] Using saved location:', userLat, userLng)
+      console.log('[weather] Geolocation not supported, using Bangalore fallback')
+      fetchWeather(12.9716, 77.5946)
     }
-
-    if (userLat && userLng) {
-      console.log('[weather] Fetching weather (no auto-refresh to preserve quota)...')
-      fetchWeather(parseFloat(userLat), parseFloat(userLng))
-    }
-  }, [])
+  }, [fetchWeather])
 
   /* ── Sync CSS custom properties so CSS classes pick up theme/gradient ── */
   useEffect(() => {
@@ -4667,7 +4669,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       >
         {/* Header */}
         <div className="wa-sidebar-header">
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12 }}>
             {/* User avatar — tap to open account switcher (WhatsApp style) */}
             <button onClick={() => { saveCurrentAccount(); setShowAccountSwitcher(true) }} title="Switch account"
               style={{ position: 'relative', width: 38, height: 38, borderRadius: '50%', border: 'none', padding: 0, cursor: 'pointer', background: 'none', flexShrink: 0 }}>
@@ -4684,12 +4686,42 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
             </button>
             <div style={{ color: '#e9edef', fontWeight: 700, fontSize: 15, letterSpacing: 0.5 }}>SPVB</div>
           </div>
+          {/* Weather - Small Icon + Big White Temp */}
+          {weather && (
+            <div
+              onClick={() => {
+                if (navigator.geolocation) {
+                  navigator.geolocation.getCurrentPosition(
+                    pos => {
+                      setUserLat(pos.coords.latitude)
+                      setUserLng(pos.coords.longitude)
+                      fetchWeather(pos.coords.latitude, pos.coords.longitude)
+                    },
+                    () => fetchWeather(12.9716, 77.5946)
+                  )
+                } else {
+                  fetchWeather(12.9716, 77.5946)
+                }
+              }}
+              style={{ position: 'relative', width: 50, height: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginLeft: 12, marginRight: 12 }}
+              title="Click to refresh"
+            >
+              {/* Weather Emoji - Left */}
+              {weather.emoji && (
+                <div style={{ fontSize: 22, position: 'absolute', left: 2, zIndex: 1, opacity: 0.7 }}>
+                  {weather.emoji}
+                </div>
+              )}
+              {/* Big White Temperature - Right with gap */}
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'white', position: 'absolute', right: 0, zIndex: 2, textShadow: 'rgba(0, 0, 0, 0.5) 0px 1px 2px' }}>
+                {weather.temp}°C
+              </span>
+            </div>
+          )}
+
           <div className="wa-header-icons">
             <button className="wa-icon-btn" title="Add contact by phone" onClick={() => setShowAddContact(true)}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
-            </button>
-            <button className="wa-icon-btn" title="New Group" onClick={() => setShowCreateGroup(true)}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             </button>
             <button className="wa-icon-btn" title="New chat" onClick={() => setTab('chats')}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="10" y1="10" x2="14" y2="10"/></svg>
@@ -4703,60 +4735,6 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           </div>
         </div>
 
-        {/* Weather Card - Modern Style */}
-        {(weather && weatherLocation) || loadingWeather ? (
-          <div style={{ padding: '12px 16px', background: 'linear-gradient(135deg, #1a212b 0%, #242d39 100%)', borderBottom: '1px solid rgba(134,150,160,0.15)' }}>
-            {loadingWeather ? (
-              <div style={{ textAlign: 'center', color: '#8696a0', fontSize: 12 }}>
-                ⏳ Loading weather...
-              </div>
-            ) : weather && weatherLocation ? (
-              (() => {
-                const hour = new Date().getHours()
-                const isNight = hour < 6 || hour >= 18
-                const timing = hour < 6 ? 'Night' : hour < 12 ? 'Morning' : hour < 18 ? 'Afternoon' : 'Night'
-                const timeIcon = isNight ? '🌙' : '☀️'
-
-                return (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                    {/* Timing & Weather Icon */}
-                    <div style={{ textAlign: 'center', minWidth: 70 }}>
-                      <div style={{ fontSize: 11, color: '#8696a0', marginBottom: 4, fontWeight: 600 }}>
-                        {timing}
-                      </div>
-                      <div style={{ fontSize: 12, marginBottom: 4 }}>
-                        {timeIcon}
-                      </div>
-                      <div style={{ fontSize: 40 }}>
-                        {weather.emoji}
-                      </div>
-                    </div>
-
-                    {/* Temperature & Location */}
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                        <span style={{ fontSize: 32, fontWeight: 700, color: '#e9edef' }}>
-                          {weather.temp}
-                        </span>
-                        <span style={{ fontSize: 16, color: '#8696a0' }}>°C</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: '#8696a0', marginTop: 4 }}>
-                        {weatherLocation}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#6b7680', marginTop: 4 }}>
-                        Humidity: {weather.humidity}%
-                      </div>
-                    </div>
-                  </div>
-                )
-              })()
-            ) : (
-              <div style={{ textAlign: 'center', color: '#ff6b6b', fontSize: 12 }}>
-                ⚠️ Weather unavailable
-              </div>
-            )}
-          </div>
-        ) : null}
 
         {/* Tab bar */}
         {(() => {

@@ -3896,6 +3896,24 @@ def _get_weather_sync(lat: float, lng: float):
         if weather_data.get("currently"):
             current = weather_data["currently"]
             condition = current.get("icon", "cloudy")
+
+            # Determine if it's actually day or night based on sunrise/sunset
+            is_day = True
+            if weather_data.get("daily") and weather_data["daily"].get("data"):
+                daily = weather_data["daily"]["data"][0]  # Today's forecast
+                sunrise = daily.get("sunriseTime")
+                sunset = daily.get("sunsetTime")
+                current_time = weather_data["currently"].get("time", int(time.time()))
+
+                if sunrise and sunset:
+                    is_day = sunrise < current_time < sunset
+
+            # Adjust condition based on day/night
+            if is_day:
+                condition = condition.replace('-night', '-day')
+            else:
+                condition = condition.replace('-day', '-night')
+
             emoji = weather_emojis.get(condition, '🌡️')
             temp = int(current.get("temperature", 0))
             humidity = int(current.get("humidity", 0) * 100) if current.get("humidity") else 0
