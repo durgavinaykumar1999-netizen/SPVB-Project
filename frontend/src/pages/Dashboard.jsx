@@ -4751,7 +4751,6 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                 )
               })()
             ) : (
-            ) : (
               <div style={{ textAlign: 'center', color: '#ff6b6b', fontSize: 12 }}>
                 ⚠️ Weather unavailable
               </div>
