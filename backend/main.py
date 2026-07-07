@@ -23,6 +23,7 @@ import time
 import threading
 import traceback
 import urllib.request
+import urllib.parse
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from collections import defaultdict
@@ -3815,6 +3816,25 @@ async def remove_session(session_id: str, cu: dict = Depends(get_current_user)):
     await ws_manager.send(str(cu["user_id"]), {"type": "force_logout", "session_id": session_id})
     mdb_delete_session(session_id, cu["user_id"])
     return {"status": "removed"}
+
+# ── GIF Search (Giphy Proxy) - TODO: Review and enable later ──────────────────────────────
+# NOTE: GIF search feature is currently disabled and needs to be reviewed/tested
+# To enable: uncomment the code below and test with frontend
+# Requires GIPHY_API_KEY in .env or uses default key
+
+# @app.get("/api/gifs/search")
+# async def search_gifs(q: str, limit: int = 20):
+#     """Proxy Giphy API requests to avoid CORS errors"""
+#     giphy_key = os.getenv("GIPHY_API_KEY", "3o85xmWDYKgihhIKSA")
+#     try:
+#         url = f"https://api.giphy.com/v1/gifs/search?api_key={giphy_key}&q={urllib.parse.quote(q or 'trending')}&limit={limit}"
+#         req = urllib.request.Request(url)
+#         req.add_header('User-Agent', 'Mozilla/5.0')
+#         with urllib.request.urlopen(req, timeout=5) as resp:
+#             data = json.loads(resp.read().decode())
+#         return data
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"GIF search failed: {str(e)}")
 
 # ── Smart Reply ───────────────────────────────────────────
 
