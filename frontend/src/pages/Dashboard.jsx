@@ -4703,24 +4703,40 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           </div>
         </div>
 
-        {/* Weather Display - Always show, even when loading/failed */}
+        {/* Weather Card - Modern Style */}
         {(weather && weatherLocation) || loadingWeather ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', background: '#1a212b', borderBottom: '1px solid rgba(134,150,160,0.1)', fontSize: 12, color: '#8696a0' }}>
+          <div style={{ padding: '12px 16px', background: 'linear-gradient(135deg, #1a212b 0%, #242d39 100%)', borderBottom: '1px solid rgba(134,150,160,0.15)' }}>
             {loadingWeather ? (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>⏳ Loading weather...</span>
-              </span>
+              <div style={{ textAlign: 'center', color: '#8696a0', fontSize: 12 }}>
+                ⏳ Loading weather...
+              </div>
             ) : weather && weatherLocation ? (
-              <>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 14 }}>{weather.emoji}</span>
-                  <span>{weather.temp}°C</span>
-                  <span style={{ fontSize: 11, opacity: 0.7 }}>Humidity: {weather.humidity}%</span>
-                </span>
-                <span style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{weatherLocation}</span>
-              </>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                {/* Weather Icon */}
+                <div style={{ fontSize: 48, minWidth: 60, textAlign: 'center' }}>
+                  {weather.emoji}
+                </div>
+
+                {/* Temperature & Location */}
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                    <span style={{ fontSize: 32, fontWeight: 700, color: '#e9edef' }}>
+                      {weather.temp}
+                    </span>
+                    <span style={{ fontSize: 16, color: '#8696a0' }}>°C</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#8696a0', marginTop: 4 }}>
+                    {weatherLocation}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#6b7680', marginTop: 4 }}>
+                    Humidity: {weather.humidity}%
+                  </div>
+                </div>
+              </div>
             ) : (
-              <span style={{ fontSize: 11, color: '#ff6b6b' }}>⚠️ Weather unavailable</span>
+              <div style={{ textAlign: 'center', color: '#ff6b6b', fontSize: 12 }}>
+                ⚠️ Weather unavailable
+              </div>
             )}
           </div>
         ) : null}
