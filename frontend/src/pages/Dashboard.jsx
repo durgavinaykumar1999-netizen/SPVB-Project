@@ -4707,17 +4707,27 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           </div>
         </div>
 
-        {/* Weather Display */}
-        {weather && weatherLocation && (
+        {/* Weather Display - Always show, even when loading/failed */}
+        {(weather && weatherLocation) || loadingWeather ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', background: '#1a212b', borderBottom: '1px solid rgba(134,150,160,0.1)', fontSize: 12, color: '#8696a0' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 14 }}>{weather.emoji}</span>
-              <span>{weather.temp}°C</span>
-              <span style={{ fontSize: 11, opacity: 0.7 }}>Humidity: {weather.humidity}%</span>
-            </span>
-            <span style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{weatherLocation}</span>
+            {loadingWeather ? (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>⏳ Loading weather...</span>
+              </span>
+            ) : weather && weatherLocation ? (
+              <>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 14 }}>{weather.emoji}</span>
+                  <span>{weather.temp}°C</span>
+                  <span style={{ fontSize: 11, opacity: 0.7 }}>Humidity: {weather.humidity}%</span>
+                </span>
+                <span style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{weatherLocation}</span>
+              </>
+            ) : (
+              <span style={{ fontSize: 11, color: '#ff6b6b' }}>⚠️ Weather unavailable</span>
+            )}
           </div>
-        )}
+        ) : null}
 
         {/* Tab bar */}
         {(() => {
