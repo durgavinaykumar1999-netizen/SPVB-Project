@@ -255,6 +255,9 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   const [keyboardHeight, setKeyboardHeight] = useState(0)
   const [botTyping, setBotTyping] = useState(false)
   const [tab, setTab] = useState('chats')
+  const [weather, setWeather] = useState(null)
+  const [weatherLocation, setWeatherLocation] = useState('')
+  const [loadingWeather, setLoadingWeather] = useState(false)
   const tabSwipeStartX = useRef(null)
   const tabSwipeStartY = useRef(null)
   const TABS = ['chats', 'status', 'calls', 'mail']
@@ -672,6 +675,62 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   const themeColor = THEMES[chatTheme] || PREMIUM_THEMES.find(t => t.id === chatTheme)?.accent || THEMES.green
   const _premiumTheme = PREMIUM_THEMES.find(t => t.id === chatTheme)
   const themeGradient = _premiumTheme ? _premiumTheme.gradient : themeColor
+
+  /* ── Weather Display from User Location ── */
+  const fetchWeather = useCallback(async (lat, lng) => {
+    try {
+      setLoadingWeather(true)
+      console.log(`[weather] Fetching weather for lat=${lat}, lng=${lng}`)
+
+      // Call backend weather proxy endpoint (avoids CORS issues)
+      const res = await fetch(apiUrl(`/api/weather?lat=${lat}&lng=${lng}`))
+
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status} ${res.statusText}`)
+      }
+
+      const data = await res.json()
+      console.log('[weather] ✅ Weather received:', data)
+
+      setWeather({
+        temp: data.temp,
+        emoji: data.emoji,
+        humidity: data.humidity,
+        code: data.code
+      })
+      setWeatherLocation(data.location)
+      console.log(`[weather] ✅ Display: ${data.emoji} ${data.temp}°C | ${data.location} (Humidity: ${data.humidity}%)`)
+      setLoadingWeather(false)
+    } catch (err) {
+      console.error('[weather] ❌ Error fetching weather:', err)
+      setLoadingWeather(false)
+    }
+  }, [])
+
+  // Fetch weather when user location is available
+  useEffect(() => {
+    let userLat = localStorage.getItem('user_lat')
+    let userLng = localStorage.getItem('user_lng')
+
+    // If no stored location, use default for testing (New Delhi, India)
+    if (!userLat || !userLng) {
+      userLat = '28.7041'
+      userLng = '77.1025'
+      console.log('[weather] Using default location (New Delhi) - user location not yet set')
+    } else {
+      console.log('[weather] Using saved location:', userLat, userLng)
+    }
+
+    if (userLat && userLng) {
+      console.log('[weather] Fetching weather...')
+      fetchWeather(parseFloat(userLat), parseFloat(userLng))
+      // Refresh weather every 10 minutes
+      const interval = setInterval(() => {
+        fetchWeather(parseFloat(userLat), parseFloat(userLng))
+      }, 10 * 60 * 1000)
+      return () => clearInterval(interval)
+    }
+  }, [fetchWeather])
 
   /* ── Sync CSS custom properties so CSS classes pick up theme/gradient ── */
   useEffect(() => {
@@ -4647,6 +4706,18 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
             </button>
           </div>
         </div>
+
+        {/* Weather Display */}
+        {weather && weatherLocation && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', background: '#1a212b', borderBottom: '1px solid rgba(134,150,160,0.1)', fontSize: 12, color: '#8696a0' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 14 }}>{weather.emoji}</span>
+              <span>{weather.temp}°C</span>
+              <span style={{ fontSize: 11, opacity: 0.7 }}>Humidity: {weather.humidity}%</span>
+            </span>
+            <span style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{weatherLocation}</span>
+          </div>
+        )}
 
         {/* Tab bar */}
         {(() => {

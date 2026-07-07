@@ -3854,3 +3854,52 @@ async def smart_reply(req: SmartReplyRequest, cu: dict = Depends(get_current_use
             break
     suggestions = _compute_smart_replies(last_bot, last_user)
     return {"suggestions": suggestions[:3]}
+
+# ── Weather API (proxy to Open-Meteo) ──────────────────────────
+@app.get("/api/weather")
+async def get_weather(lat: float, lng: float):
+    """Get weather for given coordinates - proxy to Open-Meteo API"""
+    try:
+        # Fetch weather from Open-Meteo API
+        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lng}&current=temperature_2m,weather_code,humidity&timezone=auto"
+        req = urllib.request.Request(weather_url)
+        req.add_header('User-Agent', 'SPVB/1.0')
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            weather_data = json.loads(resp.read().decode())
+
+        # Fetch location name from Nominatim
+        geo_url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}"
+        req = urllib.request.Request(geo_url)
+        req.add_header('User-Agent', 'SPVB/1.0')
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            geo_data = json.loads(resp.read().decode())
+
+        location_name = (geo_data.get("address", {}).get("city") or
+                        geo_data.get("address", {}).get("town") or
+                        geo_data.get("address", {}).get("county") or
+                        "Your Location")
+
+        # Map weather codes to emoji
+        weather_emojis = {
+            0: '☀️', 1: '🌤️', 2: '⛅', 3: '☁️', 45: '🌫️', 48: '🌫️',
+            51: '🌧️', 53: '🌧️', 55: '🌧️', 61: '🌧️', 63: '⛈️', 65: '⛈️',
+            71: '❄️', 73: '❄️', 75: '❄️', 77: '❄️', 80: '🌧️', 81: '⛈️', 82: '⛈️',
+            85: '❄️', 86: '❄️', 95: '⛈️', 96: '⛈️', 99: '⛈️'
+        }
+
+        if weather_data.get("current"):
+            current = weather_data["current"]
+            weather_code = current.get("weather_code", 0)
+            emoji = weather_emojis.get(weather_code, '🌡️')
+
+            return {
+                "temp": round(current.get("temperature_2m", 0)),
+                "emoji": emoji,
+                "humidity": current.get("humidity", 0),
+                "code": weather_code,
+                "location": location_name
+            }
+        else:
+            raise HTTPException(status_code=500, detail="No weather data")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Weather error: {str(e)}")
