@@ -707,12 +707,13 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     }
   }, [])
 
-  // Fetch weather when user location is available
+  // Fetch weather ONCE on mount (preserve Pirate Weather 10k/month quota)
+  // No auto-refresh - only fetch on manual user action or initial load
   useEffect(() => {
     let userLat = localStorage.getItem('user_lat')
     let userLng = localStorage.getItem('user_lng')
 
-    // If no stored location, use default for testing (New Delhi, India)
+    // If no stored location, use default (New Delhi, India)
     if (!userLat || !userLng) {
       userLat = '28.7041'
       userLng = '77.1025'
@@ -722,15 +723,10 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     }
 
     if (userLat && userLng) {
-      console.log('[weather] Fetching weather...')
+      console.log('[weather] Fetching weather (no auto-refresh to preserve quota)...')
       fetchWeather(parseFloat(userLat), parseFloat(userLng))
-      // Refresh weather every 10 minutes
-      const interval = setInterval(() => {
-        fetchWeather(parseFloat(userLat), parseFloat(userLng))
-      }, 10 * 60 * 1000)
-      return () => clearInterval(interval)
     }
-  }, [fetchWeather])
+  }, [])
 
   /* ── Sync CSS custom properties so CSS classes pick up theme/gradient ── */
   useEffect(() => {

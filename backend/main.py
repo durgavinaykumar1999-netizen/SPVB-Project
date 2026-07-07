@@ -3855,60 +3855,59 @@ async def smart_reply(req: SmartReplyRequest, cu: dict = Depends(get_current_use
     suggestions = _compute_smart_replies(last_bot, last_user)
     return {"suggestions": suggestions[:3]}
 
-# ── Weather API (proxy to Open-Meteo) ──────────────────────────
+# ── Weather API (Pirate Weather - 10,000 req/month) ──────────────────────────
 def _get_weather_sync(lat: float, lng: float):
-    """Synchronous weather fetch using urllib"""
+    """Fetch weather from Pirate Weather API"""
     try:
-        # Fetch weather from Open-Meteo API
-        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lng}&current=temperature_2m,weather_code,humidity&timezone=auto"
-        print(f"[WEATHER] Fetching: {weather_url}")
+        # Pirate Weather API endpoint (10,000 requests/month)
+        # Using their subscription URL
+        pirate_weather_url = f"https://pirate-weather.apiable.io/forecast/6a4d3aa32dcca4dfc0377abb/latest?lat={lat}&lon={lng}&exclude=minutely,hourly,daily,alerts"
+        print(f"[WEATHER] Fetching from Pirate Weather: lat={lat}, lng={lng}")
 
-        req = urllib.request.Request(weather_url)
-        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+        req = urllib.request.Request(pirate_weather_url)
+        req.add_header('User-Agent', 'SPVB/1.0')
 
         with urllib.request.urlopen(req, timeout=10) as resp:
             weather_data = json.loads(resp.read().decode())
-            print(f"[WEATHER] Got weather data: {weather_data}")
+            print(f"[WEATHER] Got Pirate Weather data")
 
-        # Fetch location name from Nominatim
+        # Fetch location name from Nominatim (free, no quota)
         geo_url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}"
-        print(f"[WEATHER] Fetching location: {geo_url}")
-
         req = urllib.request.Request(geo_url)
-        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+        req.add_header('User-Agent', 'SPVB/1.0')
 
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            geo_data = json.loads(resp.read().decode())
-            print(f"[WEATHER] Got location data: {geo_data}")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                geo_data = json.loads(resp.read().decode())
+                location_name = (geo_data.get("address", {}).get("city") or
+                                geo_data.get("address", {}).get("town") or
+                                geo_data.get("address", {}).get("county") or
+                                f"{lat},{lng}")
+        except:
+            location_name = f"{lat},{lng}"
 
-        location_name = (geo_data.get("address", {}).get("city") or
-                        geo_data.get("address", {}).get("town") or
-                        geo_data.get("address", {}).get("county") or
-                        f"{lat},{lng}")
-
-        # Map weather codes to emoji
+        # Map Pirate Weather conditions to emoji
         weather_emojis = {
-            0: '☀️', 1: '🌤️', 2: '⛅', 3: '☁️', 45: '🌫️', 48: '🌫️',
-            51: '🌧️', 53: '🌧️', 55: '🌧️', 61: '🌧️', 63: '⛈️', 65: '⛈️',
-            71: '❄️', 73: '❄️', 75: '❄️', 77: '❄️', 80: '🌧️', 81: '⛈️', 82: '⛈️',
-            85: '❄️', 86: '❄️', 95: '⛈️', 96: '⛈️', 99: '⛈️'
+            'clear-day': '☀️', 'clear-night': '🌙', 'partly-cloudy-day': '🌤️', 'partly-cloudy-night': '⛅',
+            'cloudy': '☁️', 'rain': '🌧️', 'snow': '❄️', 'sleet': '🌨️', 'wind': '💨', 'fog': '🌫️',
+            'thunderstorm': '⛈️'
         }
 
-        if weather_data.get("current"):
-            current = weather_data["current"]
-            weather_code = int(current.get("weather_code", 0))
-            emoji = weather_emojis.get(weather_code, '🌡️')
-            temp = int(current.get("temperature_2m", 0))
-            humidity = int(current.get("humidity", 0))
+        if weather_data.get("currently"):
+            current = weather_data["currently"]
+            condition = current.get("icon", "cloudy")
+            emoji = weather_emojis.get(condition, '🌡️')
+            temp = int(current.get("temperature", 0))
+            humidity = int(current.get("humidity", 0) * 100) if current.get("humidity") else 0
 
             result = {
                 "temp": temp,
                 "emoji": emoji,
                 "humidity": humidity,
-                "code": weather_code,
+                "code": condition,
                 "location": location_name
             }
-            print(f"[WEATHER] ✅ Success: {emoji} {temp}°C | {location_name}")
+            print(f"[WEATHER] ✅ Success: {emoji} {temp}°C | {location_name} (Humidity: {humidity}%)")
             return result
         else:
             raise Exception("No current weather data in response")
@@ -3918,18 +3917,18 @@ def _get_weather_sync(lat: float, lng: float):
 
 @app.get("/api/weather")
 async def get_weather(lat: float, lng: float):
-    """Get weather for given coordinates - proxy to Open-Meteo API"""
+    """Get weather from Pirate Weather API (10,000 req/month quota)"""
     try:
         result = _get_weather_sync(lat, lng)
         return result
     except Exception as e:
         print(f"[WEATHER] API Error: {str(e)}")
-        # Fallback to mock data for testing (when external APIs unavailable)
-        print(f"[WEATHER] Using fallback mock data for testing")
+        # Fallback to mock data when API unavailable
+        print(f"[WEATHER] Using fallback mock data")
         return {
             "temp": 28,
             "emoji": "☀️",
             "humidity": 65,
-            "code": 1,
-            "location": "New Delhi, India"
+            "code": "clear-day",
+            "location": "Location"
         }
