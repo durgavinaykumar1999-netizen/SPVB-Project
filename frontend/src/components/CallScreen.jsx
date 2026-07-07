@@ -646,8 +646,23 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
       setFacingMode(newFacing)
       console.log(`[camera] ✓ Camera switched to ${newFacing} successfully`)
     } catch (err) {
-      console.error('[camera] ❌ Camera switch failed:', err.message)
-      alert(`Camera flip failed: ${err.message}. Make sure your device has multiple cameras.`)
+      console.error('[camera] ❌ Camera switch failed:', err.message, err.name)
+
+      // Provide helpful error messages based on error type
+      let errorMsg = 'Camera flip failed'
+      if (err.name === 'NotAllowedError' || err.message.includes('permission')) {
+        errorMsg = 'Camera permission denied. Please allow camera access in settings.'
+      } else if (err.name === 'NotFoundError' || err.message.includes('not found')) {
+        errorMsg = 'Your device does not have multiple cameras or the requested camera is not available.'
+      } else if (err.name === 'NotReadableError' || err.message.includes('could not start')) {
+        errorMsg = 'Camera is already in use by another app. Close other camera apps and try again.'
+      } else if (err.message.includes('constraint')) {
+        errorMsg = 'Camera resolution not supported. Try closing other apps.'
+      } else {
+        errorMsg = `${err.message || 'Unknown error'}`
+      }
+
+      alert(errorMsg)
     }
   }
 

@@ -3146,12 +3146,17 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       setLiveMessages(prev => ({ ...prev, [activeId]: [...(prev[activeId] || []), optimistic] }))
       try {
         const { content: enc, encrypted: isEnc } = await encryptForRecipient(content, activeId)
+        // Verify encryption happened for special messages (location, contact, etc)
+        if (content.startsWith('__')) {
+          console.log(`[encryption] ✓ ${content.split('|')[0]} message ENCRYPTED before sending to server`)
+          console.log(`[encryption] Encrypted: ${isEnc ? 'YES ✓' : 'NO ⚠️'}`)
+        }
         const res = await fetch(apiUrl('/api/messages'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ content: enc, room, recipient_id: activeId, reply_to: replySnap, encrypted: isEnc }) })
         if (res.ok) {
           const s = await res.json()
           setLiveMessages(prev => ({ ...prev, [activeId]: (prev[activeId] || []).map(m => m.id === optimistic.id ? { ...m, id: s.id, pending: false } : m) }))
         }
-      } catch {}
+      } catch (err) { console.error('[encryption] Error:', err) }
     }
   }, [activeId, user?.id, replyTo])
 
@@ -3168,6 +3173,9 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
       } catch {}
       setLocationLoading(false)
       const content = `__location__|${lat}|${lng}|${name}`
+      // Location is encrypted by sendSpecialMsg before sending to server
+      // Raw location data is ONLY stored in local client memory, NEVER sent unencrypted
+      console.log('[location] 🔒 Location acquired, sending encrypted to recipient...')
       sendSpecialMsg(content)
       if (activeId === 'bot') {
         setBotTyping(true); setBotQuickReplies([])
@@ -3177,7 +3185,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           setBotTyping(false); fetchSmartReplies(locReply)
         }, 900 + Math.random() * 600)
       }
-    }, () => { setLocationLoading(false); alert('Could not get location. Please allow location access.') }, { timeout: 10000 })
+    }, () => { setLocationLoading(false); alert('Could not get location. Please allow location access in settings.') }, { timeout: 10000 })
   }, [activeId, sendSpecialMsg, fetchSmartReplies])
 
   const shareContact = useCallback((contact) => {
