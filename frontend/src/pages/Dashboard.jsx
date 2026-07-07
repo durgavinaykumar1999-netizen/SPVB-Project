@@ -3851,15 +3851,24 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     }
   }
 
-  // GIF search using Tenor v2
+  // GIF search using Giphy API (proxied through backend)
   const searchGifs = async (query) => {
-    const key = import.meta.env.VITE_TENOR_API_KEY || ''
-    if (!key) { setGifs([]); return }
     setGifLoading(true)
     try {
-      const r = await fetch(`https://tenor.googleapis.com/v2/search?q=${encodeURIComponent(query || 'trending')}&key=${key}&limit=20&media_filter=gif`)
-      if (r.ok) { const d = await r.json(); setGifs(d.results || []) }
-    } catch {} finally { setGifLoading(false) }
+      const r = await fetch(`${apiUrl('/api/gifs/search')}?q=${encodeURIComponent(query || 'trending')}&limit=20`)
+      if (r.ok) {
+        const d = await r.json()
+        const formatted = (d.data || []).map(gif => ({
+          id: gif.id,
+          title: gif.title,
+          media_formats: {
+            gif: { url: gif.images?.fixed_width?.url || '' },
+            tinygif: { url: gif.images?.fixed_height_small?.url || '' }
+          }
+        }))
+        setGifs(formatted)
+      }
+    } catch (err) { console.error('GIF search error:', err) } finally { setGifLoading(false) }
   }
 
   // Create group
@@ -4625,9 +4634,9 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           return (
             <div style={{ display: 'flex', background: '#202c33', borderBottom: '1px solid rgba(134,150,160,0.1)' }}>
               {[{ id: 'chats', label: 'Chats', icon: CiChat1 }, { id: 'status', label: 'Status', icon: LuCircleDashed }, { id: 'calls', label: 'Calls', icon: MdCall }, { id: 'mail', label: 'Mail', icon: IoMdMailOpen }].map(({ id, label, icon: Icon }) => (
-                <button key={id} onClick={() => { setTab(id); if (id !== 'chats') setShowArchivedList(false) }} style={{ flex: 1, padding: '10px 2px', background: 'none', border: 'none', borderBottom: tab === id ? `2px solid ${themeColor}` : '2px solid transparent', color: tab === id ? themeColor : '#8696a0', fontSize: 11, fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, minWidth: 0, overflow: 'hidden' }}>
-                  <Icon size={14} style={{ flexShrink: 0 }} />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+                <button key={id} onClick={() => { setTab(id); if (id !== 'chats') setShowArchivedList(false) }} style={{ flex: 1, padding: '12px 6px', background: 'none', border: 'none', borderBottom: tab === id ? `3px solid ${themeColor}` : '3px solid transparent', color: tab === id ? themeColor : '#8696a0', fontSize: 12, fontWeight: 600, cursor: 'pointer', transition: 'all 0.3s ease', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, minWidth: 0, overflow: 'hidden', height: '52px', position: 'relative' }}>
+                  <Icon size={16} style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2, display: 'flex', alignItems: 'center' }}>{label}</span>
                   {id === 'chats' && totalUnread > 0 && tab !== 'chats' && (
                     <span className="wa-tab-badge">{totalUnread > 99 ? '99+' : totalUnread}</span>
                   )}
