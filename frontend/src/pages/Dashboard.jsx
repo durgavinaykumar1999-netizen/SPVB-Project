@@ -3851,24 +3851,36 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
     }
   }
 
-  // GIF search using Giphy API (proxied through backend)
+  // TODO: GIF search feature - needs to be reviewed and tested
+  // Currently commented out - to be implemented/checked later
+  // const searchGifs = async (query) => {
+  //   setGifLoading(true)
+  //   try {
+  //     const r = await fetch(`${apiUrl('/api/gifs/search')}?q=${encodeURIComponent(query || 'trending')}&limit=20`)
+  //     if (r.ok) {
+  //       const d = await r.json()
+  //       const formatted = (d.data || []).map(gif => ({
+  //         id: gif.id,
+  //         title: gif.title,
+  //         media_formats: {
+  //           gif: { url: gif.images?.fixed_width?.url || '' },
+  //           tinygif: { url: gif.images?.fixed_height_small?.url || '' }
+  //         }
+  //       }))
+  //       setGifs(formatted)
+  //     }
+  //   } catch (err) { console.error('GIF search error:', err) } finally { setGifLoading(false) }
+  // }
+
+  // Fallback: Use Tenor API for now (original implementation)
   const searchGifs = async (query) => {
+    const key = import.meta.env.VITE_TENOR_API_KEY || ''
+    if (!key) { setGifs([]); return }
     setGifLoading(true)
     try {
-      const r = await fetch(`${apiUrl('/api/gifs/search')}?q=${encodeURIComponent(query || 'trending')}&limit=20`)
-      if (r.ok) {
-        const d = await r.json()
-        const formatted = (d.data || []).map(gif => ({
-          id: gif.id,
-          title: gif.title,
-          media_formats: {
-            gif: { url: gif.images?.fixed_width?.url || '' },
-            tinygif: { url: gif.images?.fixed_height_small?.url || '' }
-          }
-        }))
-        setGifs(formatted)
-      }
-    } catch (err) { console.error('GIF search error:', err) } finally { setGifLoading(false) }
+      const r = await fetch(`https://tenor.googleapis.com/v2/search?q=${encodeURIComponent(query || 'trending')}&key=${key}&limit=20&media_filter=gif`)
+      if (r.ok) { const d = await r.json(); setGifs(d.results || []) }
+    } catch {} finally { setGifLoading(false) }
   }
 
   // Create group
