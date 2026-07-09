@@ -6,7 +6,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CiChat1 } from 'react-icons/ci'
-import { LuCircleDashed } from 'react-icons/lu'
+import { GiSpiralTentacle } from 'react-icons/gi'
 import { MdCall } from 'react-icons/md'
 import { IoMdMailOpen } from 'react-icons/io'
 import { silentlyRefreshGoogleTokens, syncContactsWithToken, isGmailTokenValid, storeGmailToken, requestAllGooglePermissions } from '../utils/googleTokens'
@@ -4741,7 +4741,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           const totalUnread = Object.values(unreadCounts).reduce((s, v) => s + (v || 0), 0)
           return (
             <div style={{ display: 'flex', background: '#202c33', borderBottom: '1px solid rgba(134,150,160,0.1)' }}>
-              {[{ id: 'chats', label: 'Chats', icon: CiChat1 }, { id: 'status', label: 'Status', icon: LuCircleDashed }, { id: 'calls', label: 'Calls', icon: MdCall }, { id: 'mail', label: 'Mail', icon: IoMdMailOpen }].map(({ id, label, icon: Icon }) => (
+              {[{ id: 'chats', label: 'Chats', icon: CiChat1 }, { id: 'status', label: 'Status', icon: GiSpiralTentacle }, { id: 'calls', label: 'Calls', icon: MdCall }, { id: 'mail', label: 'Mail', icon: IoMdMailOpen }].map(({ id, label, icon: Icon }) => (
                 <button key={id} onClick={() => { setTab(id); if (id !== 'chats') setShowArchivedList(false) }} style={{ flex: 1, padding: '12px 6px', background: 'none', border: 'none', borderBottom: tab === id ? `3px solid ${themeColor}` : '3px solid transparent', color: tab === id ? themeColor : '#8696a0', fontSize: 12, fontWeight: 600, cursor: 'pointer', transition: 'all 0.3s ease', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, minWidth: 0, overflow: 'hidden', height: '52px', position: 'relative' }}>
                   <Icon size={16} style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }} />
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2, display: 'flex', alignItems: 'center' }}>{label}</span>
