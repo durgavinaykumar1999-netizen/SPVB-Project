@@ -6,9 +6,17 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CiChat1 } from 'react-icons/ci'
-import { GiSpiralTentacle } from 'react-icons/gi'
+import { GiOilySpiral } from 'react-icons/gi'
 import { MdCall } from 'react-icons/md'
 import { IoMdMailOpen } from 'react-icons/io'
+// Settings Menu Icons
+import { CgProfile } from 'react-icons/cg'
+import { SiGnuprivacyguard } from 'react-icons/si'
+import { MdAppBlocking } from 'react-icons/md'
+import { BsChatLeft } from 'react-icons/bs'
+import { IoNotificationsCircleSharp } from 'react-icons/io5'
+import { GrStorage } from 'react-icons/gr'
+import { TbDeviceDesktopPlus } from 'react-icons/tb'
 import { silentlyRefreshGoogleTokens, syncContactsWithToken, isGmailTokenValid, storeGmailToken, requestAllGooglePermissions } from '../utils/googleTokens'
 import { wsUrl, apiUrl } from '../utils/api'
 import { getOrCreateKeyPair, encryptMessage, decryptMessage, exportKeyBackup, importKeyBackup, replaceKeyPairFromBackup, deleteStoredKeyPair } from '../utils/e2e'
@@ -259,6 +267,19 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   const [loadingWeather, setLoadingWeather] = useState(false)
   const [userLat, setUserLat] = useState(12.9716) // Default: Bangalore
   const [userLng, setUserLng] = useState(77.5946)
+  const [showCitySelector, setShowCitySelector] = useState(false)
+  const CITIES = [
+    { name: 'Bangalore', lat: 12.9716, lng: 77.5946 },
+    { name: 'Delhi', lat: 28.7041, lng: 77.1025 },
+    { name: 'Mumbai', lat: 19.0760, lng: 72.8777 },
+    { name: 'Hyderabad', lat: 17.3850, lng: 78.4867 },
+    { name: 'Chennai', lat: 13.0827, lng: 80.2707 },
+    { name: 'Kolkata', lat: 22.5726, lng: 88.3639 },
+    { name: 'Pune', lat: 18.5204, lng: 73.8567 },
+    { name: 'Jaipur', lat: 26.9124, lng: 75.7873 },
+    { name: 'Ahmedabad', lat: 23.0225, lng: 72.5714 },
+    { name: 'Lucknow', lat: 26.8467, lng: 80.9462 }
+  ]
   const tabSwipeStartX = useRef(null)
   const tabSwipeStartY = useRef(null)
   const TABS = ['chats', 'status', 'calls', 'mail']
@@ -4667,83 +4688,77 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
           else if (dx > 0 && idx > 0) setTab(TABS[idx - 1])
         }}
       >
-        {/* Header */}
-        <div className="wa-sidebar-header">
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12 }}>
-            {/* User avatar — tap to open account switcher (WhatsApp style) */}
+        {/* Header - Fully Responsive */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          background: '#202c33',
+          padding: window.innerWidth < 360 ? '6px 8px' : window.innerWidth < 600 ? '8px 10px' : '10px 12px',
+          borderBottom: '1px solid rgba(134,150,160,0.1)',
+          minHeight: window.innerWidth < 360 ? '48px' : window.innerWidth < 600 ? '52px' : '60px',
+          width: '100%',
+          boxSizing: 'border-box'
+        }}>
+          {/* Left: Avatar + SPVB */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: window.innerWidth < 360 ? 6 : window.innerWidth < 600 ? 8 : 12, minWidth: 0, flexShrink: 0 }}>
             <button onClick={() => { saveCurrentAccount(); setShowAccountSwitcher(true) }} title="Switch account"
-              style={{ position: 'relative', width: 38, height: 38, borderRadius: '50%', border: 'none', padding: 0, cursor: 'pointer', background: 'none', flexShrink: 0 }}>
-              <div style={{ width: 38, height: 38, borderRadius: '50%', overflow: 'hidden', background: themeGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: 16 }}>
+              style={{ position: 'relative', width: window.innerWidth < 360 ? 32 : window.innerWidth < 600 ? 36 : 38, height: window.innerWidth < 360 ? 32 : window.innerWidth < 600 ? 36 : 38, borderRadius: '50%', border: 'none', padding: 0, cursor: 'pointer', background: 'none', flexShrink: 0 }}>
+              <div style={{ width: '100%', height: '100%', borderRadius: '50%', overflow: 'hidden', background: themeGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: window.innerWidth < 360 ? 14 : window.innerWidth < 600 ? 15 : 16 }}>
                 {user?.avatar_url
                   ? <img src={user.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   : (user?.display_name || user?.username || 'U')[0].toUpperCase()}
               </div>
               {savedAccounts.filter(a => a.id !== user?.id).length > 0 && (
-                <div style={{ position: 'absolute', bottom: 0, right: 0, width: 14, height: 14, borderRadius: '50%', background: themeColor, border: '2px solid #111b21', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, color: '#fff', fontWeight: 700 }}>
+                <div style={{ position: 'absolute', bottom: 0, right: 0, width: 12, height: 12, borderRadius: '50%', background: themeColor, border: '1px solid #111b21', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 7, color: '#fff', fontWeight: 700 }}>
                   {savedAccounts.filter(a => a.id !== user?.id).length}
                 </div>
               )}
             </button>
-            <div style={{ color: '#e9edef', fontWeight: 700, fontSize: 15, letterSpacing: 0.5 }}>SPVB</div>
+            <div style={{ color: '#e9edef', fontWeight: 700, fontSize: window.innerWidth < 360 ? 12 : window.innerWidth < 600 ? 13 : 15, letterSpacing: 0.3, whiteSpace: 'nowrap' }}>SPVB</div>
           </div>
-          {/* Weather - Small Icon + Big White Temp */}
-          {weather && (
-            <div
-              onClick={() => {
-                if (navigator.geolocation) {
-                  navigator.geolocation.getCurrentPosition(
-                    pos => {
-                      setUserLat(pos.coords.latitude)
-                      setUserLng(pos.coords.longitude)
-                      fetchWeather(pos.coords.latitude, pos.coords.longitude)
-                    },
-                    () => fetchWeather(12.9716, 77.5946)
-                  )
-                } else {
-                  fetchWeather(12.9716, 77.5946)
-                }
-              }}
-              style={{ position: 'relative', width: 50, height: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginLeft: 12, marginRight: 12 }}
-              title="Click to refresh"
-            >
-              {/* Weather Emoji - Left */}
-              {weather.emoji && (
-                <div style={{ fontSize: 22, position: 'absolute', left: 2, zIndex: 1, opacity: 0.7 }}>
-                  {weather.emoji}
-                </div>
-              )}
-              {/* Big White Temperature - Right with gap */}
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'white', position: 'absolute', right: 0, zIndex: 2, textShadow: 'rgba(0, 0, 0, 0.5) 0px 1px 2px' }}>
-                {weather.temp}°C
-              </span>
+
+          {/* Spacer - Adds gap between avatar and weather */}
+          <div style={{ flex: 1, minWidth: 0 }} />
+
+
+          {/* Center: Weather - Hidden on very small screens */}
+          {weather && window.innerWidth >= 320 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: window.innerWidth < 600 ? 5 : 8, padding: window.innerWidth < 360 ? '4px 8px' : window.innerWidth < 600 ? '6px 10px' : '8px 12px', background: 'rgba(255,255,255,0.08)', borderRadius: window.innerWidth < 360 ? '8px' : '10px', flexShrink: 0, cursor: 'pointer', border: '1px solid rgba(134,150,160,0.1)', position: 'relative' }}
+              title="Weather for current location">
+              <span style={{ fontSize: window.innerWidth < 360 ? 16 : window.innerWidth < 600 ? 18 : 20, lineHeight: 1, flexShrink: 0 }}>{weather.emoji}</span>
+              <span style={{ color: '#e9edef', fontWeight: 600, fontSize: window.innerWidth < 360 ? 11 : window.innerWidth < 600 ? 12 : 13, lineHeight: 1 }}>{weather.temp}°C</span>
             </div>
           )}
 
-          <div className="wa-header-icons">
-            <button className="wa-icon-btn" title="Add contact by phone" onClick={() => setShowAddContact(true)}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+          {/* Spacer - Pushes icons to the right */}
+          <div style={{ flex: 1, minWidth: 0 }} />
+
+          {/* Right: Icon Buttons - ALL VISIBLE */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+            <button style={{ background: 'none', border: 'none', color: '#8696a0', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1, transition: 'color 0.2s', minWidth: 0 }} title="Add contact" onClick={() => setShowAddContact(true)}>
+              <svg width={window.innerWidth < 360 ? 18 : window.innerWidth < 600 ? 20 : 22} height={window.innerWidth < 360 ? 18 : window.innerWidth < 600 ? 20 : 22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
             </button>
-            <button className="wa-icon-btn" title="New chat" onClick={() => setTab('chats')}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="10" y1="10" x2="14" y2="10"/></svg>
+            <button style={{ background: 'none', border: 'none', color: '#8696a0', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1, transition: 'color 0.2s', minWidth: 0 }} title="New chat" onClick={() => setTab('chats')}>
+              <svg width={window.innerWidth < 360 ? 18 : window.innerWidth < 600 ? 20 : 22} height={window.innerWidth < 360 ? 18 : window.innerWidth < 600 ? 20 : 22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="10" y1="10" x2="14" y2="10"/></svg>
             </button>
-            <button className="wa-icon-btn" title="Starred Messages" onClick={() => setShowStarredPanel(true)}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            <button style={{ background: 'none', border: 'none', color: '#8696a0', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1, transition: 'color 0.2s', minWidth: 0 }} title="Starred" onClick={() => setShowStarredPanel(true)}>
+              <svg width={window.innerWidth < 360 ? 18 : window.innerWidth < 600 ? 20 : 22} height={window.innerWidth < 360 ? 18 : window.innerWidth < 600 ? 20 : 22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
             </button>
-            <button className="wa-icon-btn" title="Settings" onClick={() => { setShowSettings(true); setSettingsPage(null) }}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <button style={{ background: 'none', border: 'none', color: '#8696a0', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1, transition: 'color 0.2s', minWidth: 0 }} title="Settings" onClick={() => { setShowSettings(true); setSettingsPage(null) }}>
+              <svg width={window.innerWidth < 360 ? 18 : window.innerWidth < 600 ? 20 : 22} height={window.innerWidth < 360 ? 18 : window.innerWidth < 600 ? 20 : 22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             </button>
           </div>
         </div>
-
 
         {/* Tab bar */}
         {(() => {
           const totalUnread = Object.values(unreadCounts).reduce((s, v) => s + (v || 0), 0)
           return (
-            <div style={{ display: 'flex', background: '#202c33', borderBottom: '1px solid rgba(134,150,160,0.1)' }}>
-              {[{ id: 'chats', label: 'Chats', icon: CiChat1 }, { id: 'status', label: 'Status', icon: GiSpiralTentacle }, { id: 'calls', label: 'Calls', icon: MdCall }, { id: 'mail', label: 'Mail', icon: IoMdMailOpen }].map(({ id, label, icon: Icon }) => (
-                <button key={id} onClick={() => { setTab(id); if (id !== 'chats') setShowArchivedList(false) }} style={{ flex: 1, padding: '12px 6px', background: 'none', border: 'none', borderBottom: tab === id ? `3px solid ${themeColor}` : '3px solid transparent', color: tab === id ? themeColor : '#8696a0', fontSize: 12, fontWeight: 600, cursor: 'pointer', transition: 'all 0.3s ease', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, minWidth: 0, overflow: 'hidden', height: '52px', position: 'relative' }}>
-                  <Icon size={16} style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }} />
+            <div style={{ display: 'flex', background: '#202c33', borderBottom: '1px solid rgba(134,150,160,0.1)', paddingTop: 0 }}>
+              {[{ id: 'chats', label: 'Chats', icon: CiChat1 }, { id: 'status', label: 'Status', icon: GiOilySpiral }, { id: 'calls', label: 'Calls', icon: MdCall }, { id: 'mail', label: 'Mail', icon: IoMdMailOpen }].map(({ id, label, icon: Icon }) => (
+                <button key={id} onClick={() => { setTab(id); if (id !== 'chats') setShowArchivedList(false) }} style={{ flex: 1, padding: '11px 2px 11px', background: 'none', border: 'none', borderBottom: tab === id ? `3px solid ${themeColor}` : '3px solid transparent', color: tab === id ? themeColor : '#8696a0', fontSize: 12, fontWeight: 600, cursor: 'pointer', transition: 'all 0.3s ease', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, minWidth: 0, overflow: 'hidden', height: '48px', position: 'relative' }}>
+                  <Icon size={18} style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }} />
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2, display: 'flex', alignItems: 'center' }}>{label}</span>
                   {id === 'chats' && totalUnread > 0 && tab !== 'chats' && (
                     <span className="wa-tab-badge">{totalUnread > 99 ? '99+' : totalUnread}</span>
@@ -7537,17 +7552,17 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                   {/* ── Section 1: Core Settings ── */}
                   <div style={{ height: 8, background: dm.settingsBg }} />
                   {[
-                    { key: 'account',       icon: '👤', color: '#5c9ded', label: 'Account',          sub: 'Security notifications, change number' },
-                    { key: 'privacy',       icon: '🔒', color: '#25d366', label: 'Privacy',           sub: showLastSeen ? 'Last seen: everyone' : 'Last seen: nobody' },
-                    { key: 'blocked',       icon: '🚫', color: '#ef4444', label: 'Blocked Users',     sub: blockedUsersCount > 0 ? `${blockedUsersCount} blocked` : 'No one blocked' },
-                    { key: 'chats',         icon: '💬', color: '#fbbf24', label: 'Chats',             sub: 'Theme, wallpaper, chat history' },
-                    { key: 'notifications', icon: '🔔', color: '#f97316', label: 'Notifications',     sub: notifEnabled ? (notifSound ? 'On · Sound on' : 'On · Silent') : 'Off' },
-                    { key: 'storage',       icon: '📦', color: '#8b5cf6', label: 'Storage and Data',  sub: 'Network usage, auto-download' },
-                    { key: 'devices',       icon: '📱', color: '#06b6d4', label: 'Linked Devices',    sub: 'Link another device via QR' },
-                  ].map(({ key, icon, color, label, sub }, idx, arr) => (
+                    { key: 'account',       icon: CgProfile, color: '#5c9ded', label: 'Account',          sub: 'Security notifications, change number' },
+                    { key: 'privacy',       icon: SiGnuprivacyguard, color: '#25d366', label: 'Privacy',           sub: showLastSeen ? 'Last seen: everyone' : 'Last seen: nobody' },
+                    { key: 'blocked',       icon: MdAppBlocking, color: '#ef4444', label: 'Blocked Users',     sub: blockedUsersCount > 0 ? `${blockedUsersCount} blocked` : 'No one blocked' },
+                    { key: 'chats',         icon: BsChatLeft, color: '#fbbf24', label: 'Chats',             sub: 'Theme, wallpaper, chat history' },
+                    { key: 'notifications', icon: IoNotificationsCircleSharp, color: '#f97316', label: 'Notifications',     sub: notifEnabled ? (notifSound ? 'On · Sound on' : 'On · Silent') : 'Off' },
+                    { key: 'storage',       icon: GrStorage, color: '#8b5cf6', label: 'Storage and Data',  sub: 'Network usage, auto-download' },
+                    { key: 'devices',       icon: TbDeviceDesktopPlus, color: '#06b6d4', label: 'Linked Devices',    sub: 'Link another device via QR' },
+                  ].map(({ key, icon: Icon, color, label, sub }, idx, arr) => (
                     <div key={key} onClick={() => key === 'account' ? openAccountSettings() : setSettingsPage(key)} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '15px 20px', cursor: 'pointer', background: dm.panel, borderBottom: idx < arr.length - 1 ? `1px solid ${dm.border}` : 'none', transition: 'background 0.15s' }}
                       onMouseEnter={(e) => e.currentTarget.style.background = dm.hover} onMouseLeave={(e) => e.currentTarget.style.background = dm.panel}>
-                      <div style={{ width: 40, height: 40, borderRadius: 12, background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>{icon}</div>
+                      <div style={{ width: 40, height: 40, borderRadius: 12, background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}><Icon size={20} color={color} /></div>
                       <div style={{ flex: 1 }}><div style={{ color: dm.text, fontSize: 15, fontWeight: 500 }}>{label}</div><div style={{ color: dm.subtext, fontSize: 12, marginTop: 1 }}>{sub}</div></div>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={dm.subtext} strokeWidth="2"><polyline points="9 18 15 12 9 6"/></svg>
                     </div>
