@@ -9,39 +9,13 @@ const ICE = [
   { urls: 'turns:openrelay.metered.ca:443',              username: 'openrelayproject', credential: 'openrelayproject' },
 ]
 
-const BACKGROUNDS = [
-  { id: 'none',    label: 'None',        type: 'none' },
-  { id: 'blur-sm', label: 'Blur',        type: 'blur',     amount: 12 },
-  { id: 'blur-lg', label: 'Strong Blur', type: 'blur',     amount: 28 },
-  { id: 'solid-1', label: 'Dark',        type: 'solid',    color: '#1a1a2e' },
-  { id: 'solid-2', label: 'Green',       type: 'solid',    color: '#0a2e1a' },
-  { id: 'solid-3', label: 'Navy',        type: 'solid',    color: '#0d1b2a' },
-  { id: 'grad-1',  label: 'Sunrise',     type: 'gradient', stops: ['#f7971e','#ffd200'] },
-  { id: 'grad-2',  label: 'Ocean',       type: 'gradient', stops: ['#0575e6','#021b79'] },
-  { id: 'grad-3',  label: 'Forest',      type: 'gradient', stops: ['#134e5e','#71b280'] },
-  { id: 'grad-4',  label: 'Dusk',        type: 'gradient', stops: ['#4568dc','#b06ab3'] },
-  { id: 'grad-5',  label: 'Ember',       type: 'gradient', stops: ['#eb3349','#f45c43'] },
-  { id: 'grad-6',  label: 'Mint',        type: 'gradient', stops: ['#00b09b','#96c93d'] },
-]
-
+// Beauty Filters Only (Option A)
 const FILTERS = [
-  { id: 'none',    label: 'Normal',   apply: null },
-  { id: 'touch',   label: 'Touch up', apply: 'touch' },
-  { id: 'vivid',   label: 'Vivid',    apply: 'saturate(1.8) contrast(1.1)' },
-  { id: 'warm',    label: 'Warm',     apply: 'saturate(1.3) sepia(0.25) brightness(1.05)' },
-  { id: 'cool',    label: 'Cool',     apply: 'hue-rotate(15deg) saturate(1.15) brightness(1.04)' },
-  { id: 'bw',      label: 'B & W',    apply: 'grayscale(1) contrast(1.1)' },
-  { id: 'vintage', label: 'Vintage',  apply: 'sepia(0.6) contrast(1.1) brightness(0.92)' },
-  { id: 'neon',    label: 'Neon',     apply: 'saturate(2.2) contrast(1.25) hue-rotate(-15deg) brightness(1.05)' },
+  { id: 'none',    label: 'Normal',      apply: null },
+  { id: 'beauty',  label: 'Beauty',      apply: 'brightness(1.05) contrast(1.08) saturate(1.1)' },
+  { id: 'smooth',  label: 'Smooth',      apply: 'blur(0.8px) brightness(1.03) contrast(1.05)' },
+  { id: 'bright',  label: 'Brightening', apply: 'brightness(1.15) contrast(1.05)' },
 ]
-
-function bgSwatch(bg) {
-  if (bg.type === 'none')     return 'rgba(255,255,255,0.1)'
-  if (bg.type === 'blur')     return 'linear-gradient(135deg,#667eea80,#764ba280)'
-  if (bg.type === 'solid')    return bg.color
-  if (bg.type === 'gradient') return `linear-gradient(135deg,${bg.stops[0]},${bg.stops[1]})`
-  return '#333'
-}
 
 function createSilentKeepAlive() {
   try {
@@ -87,11 +61,6 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
   const rawVideoElRef   = useRef(null)
   const canvasStreamRef = useRef(null)
   const animFrameRef    = useRef(null)
-  const bgTimerRef      = useRef(null)
-  const segRef          = useRef(null)
-  const segReadyRef     = useRef(false)
-  const lastMaskRef     = useRef(null)
-  const activeBgRef     = useRef('none')
   const activeFilterRef = useRef('none')
   const beautyRef       = useRef(false)
 
@@ -111,16 +80,12 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
   const [speakerOn,    setSpeakerOn]    = useState(true)  // Speaker ON by default for audio output
   const [noiseCancelOn, setNoiseCancelOn] = useState(true) // Noise cancellation ON by default
   const [facingMode,   setFacingMode]   = useState('user')
-  const [showEffects,  setShowEffects]  = useState(false)
-  const [effectsTab,   setEffectsTab]   = useState('backgrounds')
-  const [activeBg,     setActiveBg]     = useState('none')
   const [activeFilter, setActiveFilter] = useState('none')
   const [connQuality,  setConnQuality]  = useState('good')
   const [showMenu,     setShowMenu]     = useState(false)  // Three-dot menu toggle
   const [screenshotAttempt, setScreenshotAttempt] = useState(false) // Screenshot protection
 
   const targetId = String(contact.id)
-  const hasEffect = activeBg !== 'none' || activeFilter !== 'none'
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   const safeEnd = (result) => { if (!endFiredRef.current) { endFiredRef.current = true; onEnd(result) } }
@@ -131,8 +96,7 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
     durationTimer.current = setInterval(() => setDuration(d => { const n = d + 1; durationRef.current = n; return n }), 1000)
   }
   const fmt = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`
-  const changeBg = (id) => { activeBgRef.current = id; setActiveBg(id) }
-  const changeFilter = (id) => { activeFilterRef.current = id; beautyRef.current = id === 'touch'; setActiveFilter(id) }
+  const changeFilter = (id) => { activeFilterRef.current = id; beautyRef.current = id !== 'none'; setActiveFilter(id) }
 
   // ── Auto-play helper: muted→play→unmute (bypasses browser autoplay policy) ─
   const autoPlay = (el) => {
@@ -167,53 +131,18 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
     pendingCands.current = []
   }
 
-  // ── MediaPipe segmentation ─────────────────────────────────────────────────
-  const initSegmentation = async () => {
-    try {
-      const { SelfieSegmentation } = await import('@mediapipe/selfie_segmentation')
-      const seg = new SelfieSegmentation({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}` })
-      seg.setOptions({ modelSelection: 1 })
-      seg.onResults(r => { lastMaskRef.current = r.segmentationMask })
-      await seg.initialize()
-      segRef.current = seg; segReadyRef.current = true
-    } catch (e) { console.warn('[FX] Segmentation unavailable:', e.message) }
-  }
 
-  // ── Draw frame onto canvas with effects ────────────────────────────────────
+  // ── Draw frame onto canvas with beauty filters only ───────────────────────
   const drawFrame = useCallback((canvas, vid) => {
     if (!canvas || !vid || vid.readyState < 2) return
     const ctx = canvas.getContext('2d')
     const w = vid.videoWidth || 640; const h = vid.videoHeight || 480
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h }
-    const bg  = BACKGROUNDS.find(b => b.id === activeBgRef.current) || BACKGROUNDS[0]
     const flt = FILTERS.find(f => f.id === activeFilterRef.current) || FILTERS[0]
     ctx.save(); ctx.clearRect(0, 0, w, h)
-    const needSeg = bg.type === 'blur' || bg.type === 'solid' || bg.type === 'gradient'
-    if (needSeg && segReadyRef.current && lastMaskRef.current) {
-      const mask = lastMaskRef.current
-      if (bg.type === 'blur') { ctx.filter = `blur(${bg.amount}px) brightness(0.7)`; ctx.drawImage(vid, -20, -20, w+40, h+40); ctx.filter = 'none' }
-      else if (bg.type === 'solid') { ctx.fillStyle = bg.color; ctx.fillRect(0, 0, w, h) }
-      else if (bg.type === 'gradient') { const g = ctx.createLinearGradient(0,0,w,h); g.addColorStop(0,bg.stops[0]); g.addColorStop(1,bg.stops[1]); ctx.fillStyle=g; ctx.fillRect(0,0,w,h) }
-      const tmp = new OffscreenCanvas(w,h); const tc = tmp.getContext('2d')
-      if (flt.apply && flt.apply !== 'touch') tc.filter = flt.apply
-      tc.drawImage(vid,0,0,w,h); tc.filter='none'
-      tc.globalCompositeOperation='destination-in'; tc.drawImage(mask,0,0,w,h); tc.globalCompositeOperation='source-over'
-      if (beautyRef.current) ctx.filter='brightness(1.06) contrast(0.96) saturate(1.05)'
-      ctx.drawImage(tmp,0,0); ctx.filter='none'
-    } else {
-      if (bg.type !== 'none' && !segReadyRef.current) {
-        if (bg.type === 'blur') { ctx.filter=`blur(${bg.amount}px)`; ctx.drawImage(vid,-20,-20,w+40,h+40); ctx.filter='none' }
-        else {
-          if (bg.type==='solid') { ctx.fillStyle=bg.color; ctx.fillRect(0,0,w,h) }
-          if (bg.type==='gradient') { const g=ctx.createLinearGradient(0,0,w,h); g.addColorStop(0,bg.stops[0]); g.addColorStop(1,bg.stops[1]); ctx.fillStyle=g; ctx.fillRect(0,0,w,h) }
-          ctx.filter=flt.apply&&flt.apply!=='touch'?flt.apply:'none'; ctx.globalAlpha=0.85; ctx.drawImage(vid,0,0,w,h); ctx.globalAlpha=1; ctx.filter='none'
-        }
-      } else {
-        let f=flt.apply&&flt.apply!=='touch'?flt.apply:'none'
-        if (beautyRef.current) f='brightness(1.06) contrast(0.94) saturate(1.05)'
-        ctx.filter=f; ctx.drawImage(vid,0,0,w,h); ctx.filter='none'
-      }
-    }
+    ctx.filter = flt.apply || 'none'
+    ctx.drawImage(vid, 0, 0, w, h)
+    ctx.filter = 'none'
     ctx.restore()
   }, [])
 
@@ -222,10 +151,9 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
     const vid = document.createElement('video')
     vid.srcObject = rawStream; vid.muted = true; vid.playsInline = true; vid.play().catch(() => {})
     rawVideoElRef.current = vid
-    const tick = async () => {
+    const tick = () => {
       animFrameRef.current = requestAnimationFrame(tick)
       if (!vid || vid.readyState < 2) return
-      if (segReadyRef.current && segRef.current) { try { await segRef.current.send({ image: vid }) } catch {} }
       drawFrame(outputCanvasRef.current, vid)                         // → WebRTC
       if (pipCanvasRef.current)     drawFrame(pipCanvasRef.current, vid)     // → fullscreen self-view
       if (pipMiniCanvasRef.current) drawFrame(pipMiniCanvasRef.current, vid) // → PiP corner self-view
@@ -240,18 +168,14 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
   const pauseLoop = () => {
     if (!animFrameRef.current) return
     cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null
-    const vid = rawVideoElRef.current
-    if (vid) bgTimerRef.current = setInterval(() => drawFrame(outputCanvasRef.current, vid), 100)
   }
 
   const resumeLoop = () => {
-    clearInterval(bgTimerRef.current); bgTimerRef.current = null
     if (animFrameRef.current || !rawVideoElRef.current) return
     const vid = rawVideoElRef.current
-    const tick = async () => {
+    const tick = () => {
       animFrameRef.current = requestAnimationFrame(tick)
       if (!vid || vid.readyState < 2) return
-      if (segReadyRef.current && segRef.current) { try { await segRef.current.send({ image: vid }) } catch {} }
       drawFrame(outputCanvasRef.current, vid)
       if (pipCanvasRef.current)     drawFrame(pipCanvasRef.current, vid)
       if (pipMiniCanvasRef.current) drawFrame(pipMiniCanvasRef.current, vid)
@@ -264,13 +188,11 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
     if (sendEnd) send({ type: 'call_end' })
     clearInterval(durationTimer.current); durationTimer.current = null
     cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null
-    clearInterval(bgTimerRef.current); bgTimerRef.current = null
     clearTimeout(iceRestartRef.current); iceRestartRef.current = null
     rawVideoElRef.current?.pause?.(); rawVideoElRef.current = null
     localStreamRef.current?.getTracks().forEach(t => t.stop()); localStreamRef.current = null
     canvasStreamRef.current?.getTracks().forEach(t => t.stop()); canvasStreamRef.current = null
     try { pcRef.current?.close() } catch {}; pcRef.current = null
-    try { segRef.current?.close() } catch {}; segRef.current = null; segReadyRef.current = false
     silentAudioRef.current?.stop?.(); silentAudioRef.current = null
     wakeLockRef.current?.release?.().catch(() => {}); wakeLockRef.current = null
   }, []) // eslint-disable-line
@@ -419,8 +341,7 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
         console.log('  • Mono Channel - For maximum voice clarity (not stereo)')
         console.log('[audio-quality] Your voice will be crystal clear in noisy environments ✓')
 
-        if (type === 'video') initSegmentation()
-        bindRemoteStream()
+          bindRemoteStream()
 
         const pc = new RTCPeerConnection({ iceServers: ICE, iceCandidatePoolSize: 10 })
         if (!alive) { pc.close(); return }
@@ -571,13 +492,12 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
     return () => {
       alive = false
       wsRef.current?.removeEventListener('message', onMsg)
-      clearInterval(durationTimer.current); clearInterval(bgTimerRef.current)
+      clearInterval(durationTimer.current)
       cancelAnimationFrame(animFrameRef.current); clearTimeout(iceRestartRef.current)
       rawVideoElRef.current?.pause?.()
       localStreamRef.current?.getTracks().forEach(t => t.stop())
       canvasStreamRef.current?.getTracks().forEach(t => t.stop())
       try { pcRef.current?.close() } catch {}
-      try { segRef.current?.close() } catch {}
       silentAudioRef.current?.stop?.()
       wakeLockRef.current?.release?.().catch(() => {})
     }
@@ -864,16 +784,13 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
         {/* Gradient overlays */}
         <div style={{ position:'absolute', inset:0, background:'linear-gradient(to bottom, rgba(0,0,0,0.58) 0%, transparent 32%, transparent 52%, rgba(0,0,0,0.72) 100%)', pointerEvents:'none', zIndex:2 }}/>
 
-        {/* Local PiP self-view (only in full-screen, tap for effects) - Mobile responsive */}
+        {/* Local PiP self-view - Mobile responsive */}
         {type === 'video' && (
-          <div style={{ position:'absolute', top:'clamp(14px, 5vw, 72px)', right:'clamp(8px, 3vw, 14px)', width:'clamp(80px, 20vw, 108px)', height:'clamp(110px, 27vw, 148px)', borderRadius:16, overflow:'hidden', border:`2px solid ${hasEffect?'rgba(255,255,255,0.55)':'rgba(255,255,255,0.22)'}`, boxShadow:'0 6px 28px rgba(0,0,0,0.65)', zIndex:10, cursor:'pointer' }}
-            onClick={()=>setShowEffects(p=>!p)}>
+          <div style={{ position:'absolute', top:'clamp(14px, 5vw, 72px)', right:'clamp(8px, 3vw, 14px)', width:'clamp(80px, 20vw, 108px)', height:'clamp(110px, 27vw, 148px)', borderRadius:16, overflow:'hidden', border:'2px solid rgba(255,255,255,0.22)', boxShadow:'0 6px 28px rgba(0,0,0,0.65)', zIndex:10 }}>
             {videoOff
               ? <div style={{ width:'100%', height:'100%', background:'#1a2535', display:'flex', alignItems:'center', justifyContent:'center' }}><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="1.5"><line x1="1" y1="1" x2="23" y2="23"/><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h2a2 2 0 0 1 2 2v9.34"/></svg></div>
               : <canvas ref={pipCanvasRef} style={{ width:'100%', height:'100%', objectFit:'cover', transform:'scaleX(-1)', display:'block' }}/>
             }
-            {hasEffect && !videoOff && <div style={{ position:'absolute', bottom:5, left:5, background:'rgba(0,0,0,0.65)', borderRadius:8, padding:'2px 7px', fontSize:10, color:'#fff', fontWeight:600 }}>FX</div>}
-            {!hasEffect && !videoOff && <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'flex-end', justifyContent:'center', paddingBottom:6 }}><span style={{ fontSize:9, color:'rgba(255,255,255,0.5)' }}>Tap for effects</span></div>}
           </div>
         )}
 
@@ -904,57 +821,6 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
         </div>
 
         <div style={{ flex:1 }}/>
-
-        {/* Effects panel */}
-        {showEffects && type === 'video' && (
-          <div style={{ position:'relative', zIndex:20, background:'rgba(14,22,35,0.96)', backdropFilter:'blur(24px)', borderTop:'1px solid rgba(255,255,255,0.07)', borderRadius:'22px 22px 0 0' }}>
-            <div style={{ display:'flex', justifyContent:'center', padding:'10px 0 0' }}><div style={{ width:36, height:4, borderRadius:2, background:'rgba(255,255,255,0.25)' }}/></div>
-            <div style={{ display:'flex', padding:'4px 20px 0', gap:4 }}>
-              {[{id:'backgrounds',label:'Background'},{id:'filters',label:'Filters'}].map(t=>(
-                <button key={t.id} onClick={()=>setEffectsTab(t.id)}
-                  style={{ flex:1, padding:'9px 0', background: effectsTab===t.id?'rgba(255,255,255,0.1)':'none', border:'none', borderRadius:10, color: effectsTab===t.id?'#fff':'rgba(255,255,255,0.4)', fontSize:13, fontWeight: effectsTab===t.id?700:500, cursor:'pointer', fontFamily:'inherit' }}>
-                  {t.label}
-                </button>
-              ))}
-            </div>
-            {effectsTab==='backgrounds' && (
-              <div style={{ display:'flex', overflowX:'auto', gap:10, padding:'14px 16px 20px', scrollbarWidth:'none' }}>
-                {BACKGROUNDS.map(bg=>{
-                  const active=activeBg===bg.id
-                  return (
-                    <button key={bg.id} onClick={()=>changeBg(bg.id)} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:7, background:'none', border:'none', cursor:'pointer', flexShrink:0, padding:0, outline:'none' }}>
-                      <div style={{ width:64, height:64, borderRadius:14, background:bgSwatch(bg), border:`3px solid ${active?'#00a884':'rgba(255,255,255,0.1)'}`, boxShadow:active?'0 0 0 1.5px #00a884':'none', transition:'all 0.2s', display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden', position:'relative' }}>
-                        {bg.type==='none'&&<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>}
-                        {bg.type==='blur'&&(<><div style={{ position:'absolute', inset:0, background:'linear-gradient(135deg,#667eea,#764ba2)', filter:'blur(5px)', transform:'scale(1.4)' }}/><span style={{ position:'relative', fontSize:24 }}>🌫️</span></>)}
-                        {active&&<div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,168,132,0.25)' }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#00a884" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg></div>}
-                      </div>
-                      <span style={{ color:active?'#00a884':'rgba(255,255,255,0.55)', fontSize:11, fontWeight:active?700:400 }}>{bg.label}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-            {effectsTab==='filters' && (
-              <div style={{ display:'flex', overflowX:'auto', gap:10, padding:'14px 16px 20px', scrollbarWidth:'none' }}>
-                {FILTERS.map(f=>{
-                  const active=activeFilter===f.id
-                  const sw={none:'rgba(255,255,255,0.1)',touch:'linear-gradient(135deg,#ffecd2,#fcb69f)',vivid:'linear-gradient(135deg,#f093fb,#f5576c)',warm:'linear-gradient(135deg,#fda085,#f6d365)',cool:'linear-gradient(135deg,#4facfe,#00f2fe)',bw:'linear-gradient(135deg,#bdc3c7,#2c3e50)',vintage:'linear-gradient(135deg,#d4a76a,#a0522d)',neon:'linear-gradient(135deg,#a855f7,#06b6d4)'}
-                  return (
-                    <button key={f.id} onClick={()=>changeFilter(f.id)} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:7, background:'none', border:'none', cursor:'pointer', flexShrink:0, padding:0, outline:'none' }}>
-                      <div style={{ width:64, height:64, borderRadius:'50%', background:sw[f.id]||'rgba(255,255,255,0.1)', border:`3px solid ${active?'#00a884':'rgba(255,255,255,0.1)'}`, display:'flex', alignItems:'center', justifyContent:'center', position:'relative' }}>
-                        {f.id==='none'&&<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>}
-                        {f.id==='touch'&&<span style={{ fontSize:24 }}>✨</span>}
-                        {f.id==='bw'&&<span style={{ fontSize:22, filter:'grayscale(1)' }}>🎞️</span>}
-                        {active&&<div style={{ position:'absolute', inset:0, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,168,132,0.22)' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00a884" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg></div>}
-                      </div>
-                      <span style={{ color:active?'#00a884':'rgba(255,255,255,0.55)', fontSize:11, fontWeight:active?700:400 }}>{f.label}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        )}
 
         {/* Controls row - Mobile Optimized: Mute, Speaker, Video, Menu, End Call */}
         <div style={{ position:'relative', zIndex:10, padding:'14px 0 44px', display:'flex', alignItems:'center', justifyContent:'center', gap:14, flexWrap:'wrap' }}>
@@ -993,21 +859,38 @@ export default function CallScreen({ call, wsRef, onEnd, onMinimize, minimized =
             {/* Dropdown menu - All additional options */}
             {showMenu && (
               <div style={{ position:'absolute', bottom:'70px', right:0, background:'rgba(20,30,48,0.98)', backdropFilter:'blur(12px)', borderRadius:12, border:'1px solid rgba(255,255,255,0.1)', minWidth:220, boxShadow:'0 8px 32px rgba(0,0,0,0.4)', zIndex:2005, maxHeight:'80vh', overflowY:'auto' }}>
-                {/* Effects option - Video calls only */}
+                {/* Beauty Filters option - Video calls only */}
                 {type === 'video' && (
-                  <button onClick={() => { setShowEffects(true); setShowMenu(false) }}
-                    style={{ width:'100%', padding:'12px 16px', border:'none', background:'none', color:'#fff', fontSize:14, textAlign:'left', cursor:'pointer', display:'flex', alignItems:'center', gap:12, transition:'background 0.2s' }}
-                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,168,132,0.15)'}
-                    onMouseLeave={e => e.currentTarget.style.background = 'none'}
-                  >
-                    <span style={{ fontSize:18 }}>✨</span>
-                    <div><div style={{ fontWeight:600 }}>Effects</div><div style={{ fontSize:11, color:'rgba(255,255,255,0.6)' }}>Background & Filters</div></div>
-                  </button>
+                  <div>
+                    <div style={{ padding:'12px 16px 8px', fontSize:11, fontWeight:600, color:'rgba(255,255,255,0.4)', textTransform:'uppercase', letterSpacing:'0.5px' }}>Beauty Filters</div>
+                    <div style={{ display:'flex', gap:6, padding:'8px 16px 12px', flexWrap:'wrap' }}>
+                      {FILTERS.map(f => (
+                        <button key={f.id} onClick={() => { changeFilter(f.id); setShowMenu(false) }}
+                          style={{
+                            padding:'6px 12px',
+                            borderRadius:8,
+                            border:`1px solid ${activeFilter === f.id ? '#00a884' : 'rgba(255,255,255,0.2)'}`,
+                            background: activeFilter === f.id ? 'rgba(0,168,132,0.2)' : 'rgba(255,255,255,0.07)',
+                            color: activeFilter === f.id ? '#00a884' : '#fff',
+                            fontSize:12,
+                            fontWeight: activeFilter === f.id ? 600 : 400,
+                            cursor:'pointer',
+                            transition:'all 0.2s',
+                            fontFamily:'inherit'
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,168,132,0.15)'}
+                          onMouseLeave={e => e.currentTarget.style.background = activeFilter === f.id ? 'rgba(0,168,132,0.2)' : 'rgba(255,255,255,0.07)'}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
 
                 {/* Noise Cancellation option */}
                 <button onClick={() => { toggleNoiseCancel(); setShowMenu(false) }}
-                  style={{ width:'100%', padding:'12px 16px', border:'none', background:'none', color:'#fff', fontSize:14, textAlign:'left', cursor:'pointer', display:'flex', alignItems:'center', gap:12, transition:'background 0.2s', borderTop: type === 'video' ? '1px solid rgba(255,255,255,0.1)' : 'none' }}
+                  style={{ width:'100%', padding:'12px 16px', border:'none', background:'none', color:'#fff', fontSize:14, textAlign:'left', cursor:'pointer', display:'flex', alignItems:'center', gap:12, transition:'background 0.2s', borderTop:'1px solid rgba(255,255,255,0.1)' }}
                   onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,168,132,0.15)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'none'}
                 >

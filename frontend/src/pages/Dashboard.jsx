@@ -17,6 +17,7 @@ import { BsChatLeft } from 'react-icons/bs'
 import { IoNotificationsCircleSharp } from 'react-icons/io5'
 import { GrStorage } from 'react-icons/gr'
 import { TbDeviceDesktopPlus } from 'react-icons/tb'
+import { FiUserPlus } from 'react-icons/fi'
 import { silentlyRefreshGoogleTokens, syncContactsWithToken, isGmailTokenValid, storeGmailToken, requestAllGooglePermissions } from '../utils/googleTokens'
 import { wsUrl, apiUrl } from '../utils/api'
 import { getOrCreateKeyPair, encryptMessage, decryptMessage, exportKeyBackup, importKeyBackup, replaceKeyPairFromBackup, deleteStoredKeyPair } from '../utils/e2e'
@@ -5133,7 +5134,10 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                 const initials = displayName.slice(0, 2).toUpperCase()
                 const bgColor = contactInList?.color || AVATAR_COLORS[log.contact_id % AVATAR_COLORS.length]
                 const isBad = log.status === 'missed' || log.status === 'rejected'
-                const dirLabel = log.direction === 'outgoing' ? '↗ Outgoing' : isBad ? '↙ Missed' : '↙ Incoming'
+                const statusText = log.status === 'rejected' ? 'Rejected' : log.status === 'missed' ? 'Missed' : ''
+                const dirLabel = log.direction === 'outgoing'
+                  ? `↗ Outgoing${statusText ? ' ' + statusText : ''}`
+                  : isBad ? '↙ Missed' : '↙ Incoming'
                 const durationLabel = log.duration > 0 ? ` · ${Math.floor(log.duration / 60)}:${(log.duration % 60).toString().padStart(2, '0')}` : ''
                 const timeLabel = (() => {
                   try {
@@ -7534,56 +7538,78 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
               {!settingsPage && (
                 <div>
                   {/* Profile card */}
-                  {/* Profile Header Section - WhatsApp Style */}
-                  <div style={{ background: `linear-gradient(135deg, ${themeColor}22 0%, ${themeColor}11 100%)`, padding: '32px 20px 24px', position: 'relative', textAlign: 'center' }}>
-                    {/* Background gradient effect */}
-                    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '80px', background: `linear-gradient(135deg, ${themeColor} 0%, ${themeGradient} 100%)`, opacity: 0.1, zIndex: 0 }} />
-
-                    {/* Profile Image with Upload */}
-                    <div style={{ position: 'relative', display: 'inline-block', zIndex: 1 }}>
-                      <div style={{ width: 100, height: 100, borderRadius: '50%', background: themeGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 700, fontSize: 40, overflow: 'hidden', border: '3px solid rgba(255,255,255,0.2)' }}>
+                  {/* Cover Photo + Profile Image Section (Like Account Page) */}
+                  <div style={{ position: 'relative', height: 330, background: user.cover_url ? 'transparent' : `linear-gradient(135deg, ${themeColor}55, #1a2c35)`, flexShrink: 0 }}>
+                    {user.cover_url && <img src={user.cover_url} alt="cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+                    {/* Cover upload button */}
+                    <label style={{ position: 'absolute', bottom: 8, right: 10, display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(0,0,0,0.55)', borderRadius: 16, padding: '5px 10px', cursor: 'pointer', color: 'white', fontSize: 12, zIndex: 10 }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                      Cover photo
+                      <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (evt) => { if (evt.target?.result) setUser({ ...user, cover_url: evt.target.result }); }; reader.readAsDataURL(file); } }} />
+                    </label>
+                    {/* Profile Image - Overlapping */}
+                    <label style={{ position: 'absolute', bottom: -35, left: '50%', transform: 'translateX(-50%)', width: 68, height: 68, cursor: 'pointer', display: 'block', zIndex: 10 }}>
+                      <div style={{ width: 68, height: 68, borderRadius: '50%', border: '3px solid #111b21', background: themeGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 700, fontSize: 26, overflow: 'hidden', position: 'relative' }}>
                         {user.avatar_url ? <img src={user.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : userInitial}
                       </div>
-                      {/* Upload Icon */}
-                      <label style={{ position: 'absolute', bottom: 0, right: 0, width: 32, height: 32, background: themeColor, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: '2px solid #1e2731', transition: 'transform 0.2s' }} onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.1)'} onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-                        <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (evt) => { if (evt.target?.result) setUser({ ...user, avatar_url: evt.target.result }); }; reader.readAsDataURL(file); } }} />
-                      </label>
-                    </div>
+                      <div style={{ position: 'absolute', bottom: 0, right: 0, background: themeColor, borderRadius: '50%', width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid #111b21' }}>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                      </div>
+                      <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (evt) => { if (evt.target?.result) setUser({ ...user, avatar_url: evt.target.result }); }; reader.readAsDataURL(file); } }} />
+                    </label>
+                  </div>
 
-                    {/* User Name */}
-                    <div style={{ marginTop: 16, position: 'relative', zIndex: 1 }}>
-                      <div style={{ color: dm.text, fontSize: 22, fontWeight: 700 }}>{user.display_name || user.username}</div>
-                      <div style={{ color: dm.subtext, fontSize: 12, marginTop: 6 }}>{user.phone || user.email}</div>
-                    </div>
-
-                    {/* Account Switcher Dropdown */}
-                    {savedAccounts.length > 1 && (
-                      <div style={{ marginTop: 12, position: 'relative', zIndex: 1 }}>
-                        <button onClick={() => setShowSwitchAccountDropdown(!showSwitchAccountDropdown)} style={{ background: 'rgba(255,255,255,0.1)', border: `1px solid ${themeColor}44`, color: dm.subtext, padding: '6px 12px', borderRadius: '20px', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto', marginRight: 'auto', transition: 'all 0.2s' }}>
-                          <span>{savedAccounts.length} Accounts</span>
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: showSwitchAccountDropdown ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}><polyline points="6 9 12 15 18 9"/></svg>
-                        </button>
-
-                        {/* Account Dropdown List */}
-                        {showSwitchAccountDropdown && (
-                          <div style={{ position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', background: dm.panel, border: `1px solid ${themeColor}44`, borderRadius: '12px', minWidth: '200px', marginTop: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 1000 }}>
-                            {savedAccounts.map(acc => (
-                              <div key={acc.id} onClick={() => { setUser(acc); setShowSwitchAccountDropdown(false); }} style={{ padding: '12px 16px', cursor: 'pointer', borderBottom: '1px solid rgba(134,150,160,0.1)', display: 'flex', alignItems: 'center', gap: 10, transition: 'background 0.2s', background: acc.id === user.id ? `${themeColor}22` : 'transparent' }} onMouseEnter={e => e.currentTarget.style.background = `${themeColor}33`} onMouseLeave={e => e.currentTarget.style.background = acc.id === user.id ? `${themeColor}22` : 'transparent'}>
-                                <div style={{ width: 36, height: 36, borderRadius: '50%', background: themeGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: 14, overflow: 'hidden' }}>
-                                  {acc.avatar_url ? <img src={acc.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : acc.display_name?.[0]?.toUpperCase() || 'U'}
-                                </div>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ color: dm.text, fontSize: 13, fontWeight: 600 }}>{acc.display_name || acc.username}</div>
-                                  <div style={{ color: dm.subtext, fontSize: 11 }}>{acc.phone || acc.email}</div>
-                                </div>
-                                {acc.id === user.id && <div style={{ width: 6, height: 6, background: themeColor, borderRadius: '50%' }} />}
-                              </div>
-                            ))}
-                          </div>
+                  {/* User Info Section */}
+                  <div style={{ paddingTop: 50, paddingBottom: 20, textAlign: 'center', position: 'relative', zIndex: 1 }}>
+                    {/* User Name with Account Switcher or Add Account Icon */}
+                    <div style={{ position: 'relative', display: 'inline-block' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                        <div style={{ color: dm.text, fontSize: 20, fontWeight: 700 }}>{user.display_name || user.username}</div>
+                        {savedAccounts.length > 1 ? (
+                          <button onClick={() => setShowSwitchAccountDropdown(!showSwitchAccountDropdown)} style={{ background: 'none', border: 'none', color: dm.subtext, cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' }} onMouseEnter={e => e.currentTarget.style.color = themeColor} onMouseLeave={e => e.currentTarget.style.color = dm.subtext} title="Switch account">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: showSwitchAccountDropdown ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}><polyline points="6 9 12 15 18 9"/></svg>
+                          </button>
+                        ) : (
+                          <button onClick={() => addNewAccount()} style={{ background: 'none', border: 'none', color: themeColor, cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' }} onMouseEnter={e => e.currentTarget.style.opacity = '0.8'} onMouseLeave={e => e.currentTarget.style.opacity = '1'} title="Add another account">
+                            <FiUserPlus size={18} />
+                          </button>
                         )}
                       </div>
-                    )}
+
+                      {/* Account Dropdown List */}
+                      {showSwitchAccountDropdown && (
+                        <div style={{ position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', background: dm.panel, border: `1px solid ${themeColor}44`, borderRadius: '12px', minWidth: '240px', marginTop: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.4)', zIndex: 1000 }}>
+                          {savedAccounts.map((acc, idx) => (
+                            <div key={acc.id} onClick={() => {
+                              if (acc.id === user.id) {
+                                setShowSwitchAccountDropdown(false)
+                                return
+                              }
+                              // Save current account first
+                              saveCurrentAccount()
+                              // Switch account: update localStorage with new account data
+                              localStorage.setItem('token', acc.token || '')
+                              localStorage.setItem('user', JSON.stringify({ id: acc.id, email: acc.email, display_name: acc.display_name, username: acc.username, avatar_url: acc.avatar_url, phone: acc.phone }))
+                              // Update state and reload page
+                              setUser(acc)
+                              setShowSwitchAccountDropdown(false)
+                              // Small delay to ensure state updates before reload
+                              setTimeout(() => window.location.reload(), 100)
+                            }} style={{ padding: '12px 16px', cursor: acc.id === user.id ? 'default' : 'pointer', borderBottom: idx < savedAccounts.length - 1 ? `1px solid rgba(134,150,160,0.1)` : 'none', display: 'flex', alignItems: 'center', gap: 10, transition: 'background 0.2s', background: acc.id === user.id ? `${themeColor}22` : 'transparent', opacity: acc.id === user.id ? 0.7 : 1 }} onMouseEnter={e => { if (acc.id !== user.id) e.currentTarget.style.background = `${themeColor}33` }} onMouseLeave={e => e.currentTarget.style.background = acc.id === user.id ? `${themeColor}22` : 'transparent'}>
+                              <div style={{ width: 40, height: 40, borderRadius: '50%', background: themeGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: 16, overflow: 'hidden', flexShrink: 0 }}>
+                                {acc.avatar_url ? <img src={acc.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : acc.display_name?.[0]?.toUpperCase() || 'U'}
+                              </div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ color: dm.text, fontSize: 13, fontWeight: 600 }}>{acc.display_name || acc.username}</div>
+                                <div style={{ color: dm.subtext, fontSize: 11 }}>{acc.phone || acc.email}</div>
+                              </div>
+                              {acc.id === user.id && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={themeColor} strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                    </div>
                   </div>
 
                   {/* ── Section 1: Core Settings ── */}
@@ -7591,7 +7617,6 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                   {[
                     { key: 'account',       icon: CgProfile, color: '#5c9ded', label: 'Account',          sub: 'Security notifications, change number' },
                     { key: 'privacy',       icon: SiGnuprivacyguard, color: '#25d366', label: 'Privacy',           sub: showLastSeen ? 'Last seen: everyone' : 'Last seen: nobody' },
-                    { key: 'blocked',       icon: MdAppBlocking, color: '#ef4444', label: 'Blocked Users',     sub: blockedUsersCount > 0 ? `${blockedUsersCount} blocked` : 'No one blocked' },
                     { key: 'chats',         icon: BsChatLeft, color: '#fbbf24', label: 'Chats',             sub: 'Theme, wallpaper, chat history' },
                     { key: 'notifications', icon: IoNotificationsCircleSharp, color: '#f97316', label: 'Notifications',     sub: notifEnabled ? (notifSound ? 'On · Sound on' : 'On · Silent') : 'Off' },
                     { key: 'storage',       icon: GrStorage, color: '#8b5cf6', label: 'Storage and Data',  sub: 'Network usage, auto-download' },
@@ -7633,8 +7658,8 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                     </div>
                   </div>
 
-                  {/* ── Section 3: Switch Account (inline dropdown) ── */}
-                  <div style={{ height: 8, background: dm.settingsBg }} />
+                  {/* ── Section 3: Switch Account (inline dropdown) - COMMENTED OUT ── */}
+                  {/* <div style={{ height: 8, background: dm.settingsBg }} />
                   <div style={{ background: dm.panel }}>
                     <div onClick={() => { saveCurrentAccount(); setShowSwitchAccountDropdown(p => !p) }} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '15px 20px', cursor: 'pointer', transition: 'background 0.15s' }}
                       onMouseEnter={(e) => e.currentTarget.style.background = dm.hover} onMouseLeave={(e) => e.currentTarget.style.background = dm.panel}>
@@ -7650,10 +7675,8 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={dm.subtext} strokeWidth="2" style={{ transition: 'transform 0.2s', transform: showSwitchAccountDropdown ? 'rotate(90deg)' : 'none' }}><polyline points="9 18 15 12 9 6"/></svg>
                     </div>
 
-                    {/* Inline account dropdown */}
                     {showSwitchAccountDropdown && (
                       <div style={{ background: dm.settingsBg, borderTop: `1px solid ${dm.border}` }}>
-                        {/* Current account */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 20px 12px 28px', background: `${themeColor}09` }}>
                           <div style={{ position: 'relative', flexShrink: 0 }}>
                             <div style={{ width: 44, height: 44, borderRadius: '50%', background: themeGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 700, fontSize: 18, overflow: 'hidden', border: `2px solid ${themeColor}` }}>
@@ -7668,7 +7691,6 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                           <div style={{ padding: '3px 10px', background: `${themeColor}22`, borderRadius: 20, color: themeColor, fontSize: 11, fontWeight: 700 }}>Active</div>
                         </div>
 
-                        {/* Other accounts */}
                         {savedAccounts.filter(a => String(a.id) !== String(user?.id)).map(acc => (
                           <div key={acc.id} style={{ display: 'flex', alignItems: 'center', borderTop: `1px solid ${dm.border}` }}>
                             <button onClick={() => { setShowSwitchAccountDropdown(false); setShowSettings(false); switchAccount(acc) }} style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px 12px 28px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', transition: 'background 0.15s' }}
@@ -7687,18 +7709,13 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                             </button>
                           </div>
                         ))}
-
-                        {/* Add account */}
-                        <button onClick={() => { setShowSwitchAccountDropdown(false); addNewAccount() }} style={{ width: '100%', padding: '13px 20px 13px 28px', background: 'none', border: 'none', borderTop: `1px solid ${dm.border}`, color: themeColor, cursor: 'pointer', fontSize: 14, fontFamily: 'inherit', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 14, fontWeight: 600, transition: 'background 0.15s' }}
-                          onMouseEnter={e => e.currentTarget.style.background = dm.hover} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
-                          <div style={{ width: 44, height: 44, borderRadius: '50%', border: `2px dashed ${themeColor}55`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={themeColor} strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                          </div>
-                          Add Account
-                        </button>
                       </div>
                     )}
+                  </div> */}
 
+                  {/* ── Section 3: Logout ── */}
+                  <div style={{ height: 8, background: dm.settingsBg }} />
+                  <div style={{ background: dm.panel }}>
                     {/* Log out */}
                     <div onClick={logout} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '15px 20px', cursor: 'pointer', borderTop: `1px solid ${dm.border}`, transition: 'background 0.15s' }}
                       onMouseEnter={(e) => e.currentTarget.style.background = '#2a1c1c'} onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
@@ -8117,6 +8134,34 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                       <div style={{ color: dm.subtext, fontSize: 12, lineHeight: 1.5 }}>Biometric data never leaves your device. SPVB uses your secure hardware for authentication.</div>
                     </div>
                   </div>
+
+                  {/* Blocked Users section */}
+                  <div style={{ margin: '16px 16px 6px', color: dm.subtext, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px' }}>Blocked Users</div>
+                  <div style={{ background: dm.panel, borderRadius: 12, overflow: 'hidden' }}>
+                    {blockedUsers && blockedUsers.length > 0 ? (
+                      <div>
+                        {blockedUsers.map((bu, idx) => (
+                          <div key={bu.id || idx} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: idx < blockedUsers.length - 1 ? `1px solid ${dm.border}` : 'none' }}>
+                            <div style={{ width: 40, height: 40, borderRadius: '50%', background: `url(${bu.photo || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%23888"%3E%3C/circle%3E%3C/svg%3E'})`, backgroundSize: 'cover', backgroundPosition: 'center', flexShrink: 0 }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ color: dm.text, fontSize: 14, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bu.name}</div>
+                              <div style={{ color: dm.subtext, fontSize: 11, marginTop: 1 }}>Blocked</div>
+                            </div>
+                            <button onClick={() => unblockUser(bu.id)}
+                              style={{ padding: '6px 12px', background: `${themeColor}18`, border: `1px solid ${themeColor}44`, borderRadius: 6, color: themeColor, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s' }}>
+                              Unblock
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ padding: '24px 16px', textAlign: 'center' }}>
+                        <div style={{ color: dm.subtext, fontSize: 13 }}>No blocked users</div>
+                        <div style={{ color: dm.subtext, fontSize: 11, marginTop: 6 }}>Users you block won't be able to message you or see your status</div>
+                      </div>
+                    )}
+                  </div>
+
                   <div style={{ height: 20 }} />
                 </div>
               )}
