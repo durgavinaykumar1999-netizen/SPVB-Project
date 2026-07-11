@@ -7616,7 +7616,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                   <div style={{ height: 8, background: dm.settingsBg }} />
                   {[
                     { key: 'account',       icon: CgProfile, color: '#5c9ded', label: 'Account',          sub: 'Security notifications, change number' },
-                    { key: 'privacy',       icon: SiGnuprivacyguard, color: '#25d366', label: 'Privacy',           sub: showLastSeen ? 'Last seen: everyone' : 'Last seen: nobody' },
+                    { key: 'privacy',       icon: SiGnuprivacyguard, color: '#25d366', label: 'Privacy',           sub: `${showLastSeen ? 'Last seen: everyone' : 'Last seen: nobody'} · ${blockedUsersCount} blocked` },
                     { key: 'chats',         icon: BsChatLeft, color: '#fbbf24', label: 'Chats',             sub: 'Theme, wallpaper, chat history' },
                     { key: 'notifications', icon: IoNotificationsCircleSharp, color: '#f97316', label: 'Notifications',     sub: notifEnabled ? (notifSound ? 'On · Sound on' : 'On · Silent') : 'Off' },
                     { key: 'storage',       icon: GrStorage, color: '#8b5cf6', label: 'Storage and Data',  sub: 'Network usage, auto-download' },
