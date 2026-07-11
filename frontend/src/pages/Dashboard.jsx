@@ -7534,19 +7534,56 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
               {!settingsPage && (
                 <div>
                   {/* Profile card */}
-                  <div onClick={openAccountSettings} style={{ background: dm.panel, padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 16, cursor: 'pointer', transition: 'background 0.15s' }}
-                    onMouseEnter={(e) => e.currentTarget.style.background = dm.hover} onMouseLeave={(e) => e.currentTarget.style.background = dm.panel}>
-                    <div style={{ position: 'relative', flexShrink: 0 }}>
-                      <div style={{ width: 62, height: 62, borderRadius: '50%', background: themeGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 700, fontSize: 24, overflow: 'hidden' }}>
+                  {/* Profile Header Section - WhatsApp Style */}
+                  <div style={{ background: `linear-gradient(135deg, ${themeColor}22 0%, ${themeColor}11 100%)`, padding: '32px 20px 24px', position: 'relative', textAlign: 'center' }}>
+                    {/* Background gradient effect */}
+                    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '80px', background: `linear-gradient(135deg, ${themeColor} 0%, ${themeGradient} 100%)`, opacity: 0.1, zIndex: 0 }} />
+
+                    {/* Profile Image with Upload */}
+                    <div style={{ position: 'relative', display: 'inline-block', zIndex: 1 }}>
+                      <div style={{ width: 100, height: 100, borderRadius: '50%', background: themeGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 700, fontSize: 40, overflow: 'hidden', border: '3px solid rgba(255,255,255,0.2)' }}>
                         {user.avatar_url ? <img src={user.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : userInitial}
                       </div>
+                      {/* Upload Icon */}
+                      <label style={{ position: 'absolute', bottom: 0, right: 0, width: 32, height: 32, background: themeColor, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: '2px solid #1e2731', transition: 'transform 0.2s' }} onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.1)'} onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                        <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (evt) => { if (evt.target?.result) setUser({ ...user, avatar_url: evt.target.result }); }; reader.readAsDataURL(file); } }} />
+                      </label>
                     </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ color: dm.text, fontSize: 17, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.display_name || user.username}</div>
-                      <div style={{ color: dm.subtext, fontSize: 13, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.about || 'Hey there! I am using SPVB.'}</div>
-                      <div style={{ color: dm.subtext, fontSize: 11, marginTop: 3 }}>{user.phone || user.email}</div>
+
+                    {/* User Name */}
+                    <div style={{ marginTop: 16, position: 'relative', zIndex: 1 }}>
+                      <div style={{ color: dm.text, fontSize: 22, fontWeight: 700 }}>{user.display_name || user.username}</div>
+                      <div style={{ color: dm.subtext, fontSize: 12, marginTop: 6 }}>{user.phone || user.email}</div>
                     </div>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={dm.subtext} strokeWidth="2"><polyline points="9 18 15 12 9 6"/></svg>
+
+                    {/* Account Switcher Dropdown */}
+                    {savedAccounts.length > 1 && (
+                      <div style={{ marginTop: 12, position: 'relative', zIndex: 1 }}>
+                        <button onClick={() => setShowSwitchAccountDropdown(!showSwitchAccountDropdown)} style={{ background: 'rgba(255,255,255,0.1)', border: `1px solid ${themeColor}44`, color: dm.subtext, padding: '6px 12px', borderRadius: '20px', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto', marginRight: 'auto', transition: 'all 0.2s' }}>
+                          <span>{savedAccounts.length} Accounts</span>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: showSwitchAccountDropdown ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}><polyline points="6 9 12 15 18 9"/></svg>
+                        </button>
+
+                        {/* Account Dropdown List */}
+                        {showSwitchAccountDropdown && (
+                          <div style={{ position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', background: dm.panel, border: `1px solid ${themeColor}44`, borderRadius: '12px', minWidth: '200px', marginTop: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 1000 }}>
+                            {savedAccounts.map(acc => (
+                              <div key={acc.id} onClick={() => { setUser(acc); setShowSwitchAccountDropdown(false); }} style={{ padding: '12px 16px', cursor: 'pointer', borderBottom: '1px solid rgba(134,150,160,0.1)', display: 'flex', alignItems: 'center', gap: 10, transition: 'background 0.2s', background: acc.id === user.id ? `${themeColor}22` : 'transparent' }} onMouseEnter={e => e.currentTarget.style.background = `${themeColor}33`} onMouseLeave={e => e.currentTarget.style.background = acc.id === user.id ? `${themeColor}22` : 'transparent'}>
+                                <div style={{ width: 36, height: 36, borderRadius: '50%', background: themeGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: 14, overflow: 'hidden' }}>
+                                  {acc.avatar_url ? <img src={acc.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : acc.display_name?.[0]?.toUpperCase() || 'U'}
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ color: dm.text, fontSize: 13, fontWeight: 600 }}>{acc.display_name || acc.username}</div>
+                                  <div style={{ color: dm.subtext, fontSize: 11 }}>{acc.phone || acc.email}</div>
+                                </div>
+                                {acc.id === user.id && <div style={{ width: 6, height: 6, background: themeColor, borderRadius: '50%' }} />}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* ── Section 1: Core Settings ── */}
