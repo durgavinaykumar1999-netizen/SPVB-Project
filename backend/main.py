@@ -3950,3 +3950,44 @@ async def get_weather(lat: float, lng: float):
             "code": "clear-day",
             "location": "Location"
         }
+
+# ── SECURITY: Screenshot & Recording Protection ────────────────────────────
+@app.post("/api/security/log-attempt")
+async def log_security_attempt(payload: dict, current_user: dict = Depends(get_current_user)):
+    """Log screenshot/recording security events for audit trail"""
+    try:
+        db = get_db()
+
+        security_log = {
+            "user_id": current_user.get("id"),
+            "event_type": payload.get("type"),
+            "timestamp": datetime.now(timezone.utc),
+            "user_agent": payload.get("userAgent", ""),
+            "details": payload
+        }
+
+        db["security_logs"].insert_one(security_log)
+        print(f"[SECURITY] {current_user.get('id')} - {payload.get('type')}")
+
+        # Check for repeated attempts
+        from datetime import timedelta
+        recent_attempts = list(db["security_logs"].find({
+            "user_id": current_user.get("id"),
+            "timestamp": {"$gte": datetime.now(timezone.utc) - timedelta(minutes=5)}
+        }))
+
+        if len(recent_attempts) >= 3:
+            # Log security alert
+            db["security_alerts"].insert_one({
+                "user_id": current_user.get("id"),
+                "alert_type": "multiple_screenshot_attempts",
+                "timestamp": datetime.now(timezone.utc),
+                "attempts": len(recent_attempts),
+                "severity": "high"
+            })
+            print(f"[SECURITY] ⚠️ ALERT: {current_user.get('id')} - Multiple screenshot attempts detected!")
+
+        return {"ok": True}
+    except Exception as e:
+        print(f"[SECURITY] Error logging attempt: {str(e)}")
+        return {"ok": False, "error": str(e)}
