@@ -255,7 +255,9 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
   const [showEmoji, setShowEmoji] = useState(false)
   const [activeCall, setActiveCall] = useState(null)
   const [callOfflineContact, setCallOfflineContact] = useState(null) // {contact, type} when target is offline
-  const [pendingRingtoneUpload, setPendingRingtoneUpload] = useState(null) // {dataUrl, fileName} waiting for save-as choice
+  const [ringtoneUploadType, setRingtoneUploadType] = useState(null) // 'msg' or 'call' for which type to upload
+  const [uploadingRingtoneType, setUploadingRingtoneType] = useState(null) // 'msg' or 'call' currently uploading
+  const [playingRingtoneId, setPlayingRingtoneId] = useState(null) // ringtone id currently playing
   const [playingAudioId, setPlayingAudioId] = useState(null) // message id of currently playing voice msg
   const [callMinimized, setCallMinimized] = useState(false)
   const [incomingCall, setIncomingCall] = useState(null)
@@ -7023,37 +7025,6 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
         </div>
       )}
 
-      {/* Ringtone save-as popup */}
-      {pendingRingtoneUpload && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 950, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
-          onClick={() => { if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }; setPendingRingtoneUpload(null) }}>
-          <div onClick={e => e.stopPropagation()} style={{ background: '#1e2d35', borderRadius: 20, padding: '24px 24px 20px', width: 300, boxShadow: '0 16px 48px rgba(0,0,0,0.7)' }}>
-            <div style={{ color: 'white', fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Save Ringtone As</div>
-            <div style={{ color: '#8696a0', fontSize: 13, marginBottom: 16 }}>"{pendingRingtoneUpload.fileName}"</div>
-            <button onClick={() => {
-              if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }
-              try { const a = new Audio(pendingRingtoneUpload.dataUrl); a.volume = 0.8; previewAudioRef.current = a; a.play().catch(() => {}) } catch {}
-            }} style={{ width: '100%', padding: '9px', background: '#2a3942', border: 'none', borderRadius: 10, color: '#8696a0', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, marginBottom: 10 }}>▶ Preview</button>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={() => {
-                if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }
-                localStorage.setItem('custom_msg_ringtone_data', pendingRingtoneUpload.dataUrl)
-                localStorage.setItem('custom_msg_ringtone_name', pendingRingtoneUpload.fileName)
-                setMsgRingtone('custom_msg'); localStorage.setItem('msg_ringtone', 'custom_msg')
-                setPendingRingtoneUpload(null)
-              }} style={{ flex: 1, padding: '11px', background: themeGradient, border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, fontSize: 13 }}>💬 Message Tone</button>
-              <button onClick={() => {
-                if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }
-                localStorage.setItem('custom_call_ringtone_data', pendingRingtoneUpload.dataUrl)
-                localStorage.setItem('custom_call_ringtone_name', pendingRingtoneUpload.fileName)
-                setCallRingtone('custom_call'); localStorage.setItem('call_ringtone', 'custom_call')
-                setPendingRingtoneUpload(null)
-              }} style={{ flex: 1, padding: '11px', background: '#25445a', border: 'none', borderRadius: 10, color: 'white', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, fontSize: 13 }}>📞 Call Ringtone</button>
-            </div>
-            <button onClick={() => { if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }; setPendingRingtoneUpload(null) }} style={{ width: '100%', marginTop: 10, padding: '9px', background: 'transparent', border: 'none', color: '#8696a0', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>Cancel</button>
-          </div>
-        </div>
-      )}
 
       {activeCall && (
         // No wrapper div — CallScreen owns all its position:fixed elements directly.
@@ -7616,7 +7587,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                   <div style={{ height: 8, background: dm.settingsBg }} />
                   {[
                     { key: 'account',       icon: CgProfile, color: '#5c9ded', label: 'Account',          sub: 'Security notifications, change number' },
-                    { key: 'privacy',       icon: SiGnuprivacyguard, color: '#25d366', label: 'Privacy',           sub: `${showLastSeen ? 'Last seen: everyone' : 'Last seen: nobody'} · ${blockedUsersCount} blocked` },
+                    { key: 'privacy',       icon: SiGnuprivacyguard, color: '#25d366', label: 'Privacy',           sub: `${showLastSeen ? 'Last seen: everyone' : 'Last seen: nobody'} , ${blockedUsersCount} blocked` },
                     { key: 'chats',         icon: BsChatLeft, color: '#fbbf24', label: 'Chats',             sub: 'Theme, wallpaper, chat history' },
                     { key: 'notifications', icon: IoNotificationsCircleSharp, color: '#f97316', label: 'Notifications',     sub: notifEnabled ? (notifSound ? 'On · Sound on' : 'On · Silent') : 'Off' },
                     { key: 'storage',       icon: GrStorage, color: '#8b5cf6', label: 'Storage and Data',  sub: 'Network usage, auto-download' },
@@ -7924,88 +7895,144 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
 
                   {/* Single hidden file input for ringtone uploads */}
                   <input id="ringtone-upload-input" type="file" accept="audio/*" style={{ display: 'none' }} onChange={(e) => {
-                    const f = e.target.files?.[0]; if (!f) return
+                    const f = e.target.files?.[0]; if (!f || !ringtoneUploadType) return
+                    setUploadingRingtoneType(ringtoneUploadType)
                     const reader = new FileReader()
                     reader.onload = (ev) => {
-                      // Stop any existing preview
-                      if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }
-                      setPendingRingtoneUpload({ dataUrl: ev.target.result, fileName: f.name.replace(/\.[^.]+$/, '') })
+                      setTimeout(() => {
+                        const fileName = f.name.replace(/\.[^.]+$/, '')
+                        const dataUrl = ev.target.result
+                        if (ringtoneUploadType === 'msg') {
+                          localStorage.setItem('custom_msg_ringtone_data', dataUrl)
+                          localStorage.setItem('custom_msg_ringtone_name', fileName)
+                          setMsgRingtone('custom_msg')
+                          localStorage.setItem('msg_ringtone', 'custom_msg')
+                        } else if (ringtoneUploadType === 'call') {
+                          localStorage.setItem('custom_call_ringtone_data', dataUrl)
+                          localStorage.setItem('custom_call_ringtone_name', fileName)
+                          setCallRingtone('custom_call')
+                          localStorage.setItem('call_ringtone', 'custom_call')
+                        }
+                        setUploadingRingtoneType(null)
+                        setRingtoneUploadType(null)
+                        if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }
+                      }, 500)
                     }
                     reader.readAsDataURL(f)
                     e.target.value = ''
                   }} />
 
-                  {/* Message Ringtone picker */}
+                  {/* Message Ringtone picker - List */}
                   <div style={{ margin: '16px 16px 6px', color: dm.subtext, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px' }}>Message Ringtone</div>
-                  <div style={{ background: dm.panel, padding: '14px 16px' }}>
-                    <div style={{ color: dm.subtext, fontSize: 12, marginBottom: 10 }}>Default sound for new messages (overridden by per-contact ringtone)</div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
-                      {RINGTONES.map(rt => {
-                        const selected = msgRingtone === rt.id
-                        const hasCustom = rt.isCustom && localStorage.getItem(rt.storageKey)
-                        return (
-                          <div key={rt.id} style={{ position: 'relative' }}>
-                            <div onClick={() => {
-                              if (rt.isCustom && !hasCustom) { document.getElementById('ringtone-upload-input').click(); return }
-                              setMsgRingtone(rt.id); localStorage.setItem('msg_ringtone', rt.id)
-                              if (rt.id !== 'none') {
-                                if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }
-                                if (rt.id === 'custom_msg') {
-                                  const dataUrl = localStorage.getItem('custom_msg_ringtone_data')
-                                  if (dataUrl) { try { const a = new Audio(dataUrl); a.volume = 0.8; previewAudioRef.current = a; a.play().catch(() => {}) } catch {} }
-                                } else { playRingtone(rt.id) }
-                              }
-                            }} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: selected ? `${themeColor}18` : dm.input, border: `1.5px solid ${selected ? themeColor : 'rgba(134,150,160,0.15)'}`, borderRadius: 10, cursor: 'pointer', transition: 'all 0.15s' }}>
-                              <span style={{ fontSize: 18 }}>{rt.emoji}</span>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ color: selected ? themeColor : dm.text, fontSize: 13, fontWeight: selected ? 700 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hasCustom ? (localStorage.getItem('custom_msg_ringtone_name') || rt.label) : rt.label}</div>
-                                <div style={{ color: dm.subtext, fontSize: 10 }}>{rt.isCustom ? (hasCustom ? 'Tap to play · Upload to change' : 'Tap to upload') : rt.desc}</div>
-                              </div>
-                              {selected && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={themeColor} strokeWidth="3" style={{ flexShrink: 0 }}><polyline points="20 6 9 17 4 12"/></svg>}
-                            </div>
-                            {rt.isCustom && hasCustom && (
-                              <div onClick={() => document.getElementById('ringtone-upload-input').click()} style={{ position: 'absolute', top: 6, right: 6, background: themeColor, borderRadius: 6, padding: '3px 7px', fontSize: 10, color: 'white', cursor: 'pointer', fontWeight: 600 }}>↑ Change</div>
-                            )}
+                  <div style={{ background: dm.panel, borderRadius: 12, overflow: 'hidden' }}>
+                    <div style={{ padding: '14px 16px', borderBottom: `1px solid ${dm.border}`, color: dm.subtext, fontSize: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+                      Default sound for new messages
+                      {uploadingRingtoneType === 'msg' && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                          <div style={{ width: 14, height: 14, border: `2px solid ${themeColor}33`, borderTopColor: themeColor, borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                          <span style={{ fontSize: 11, color: themeColor }}>Uploading...</span>
+                        </div>
+                      )}
+                    </div>
+                    {[...RINGTONES.filter(rt => !rt.isCustom), ...(localStorage.getItem('custom_msg_ringtone_data') && !uploadingRingtoneType ? [{ id: 'custom_msg', label: localStorage.getItem('custom_msg_ringtone_name') || 'My Ringtone', emoji: '🎵', isCustom: true }] : [])].map((rt, idx, arr) => {
+                      const selected = msgRingtone === rt.id
+                      const isPlaying = playingRingtoneId === rt.id
+                      return (
+                        <div key={rt.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: idx < arr.length - 1 ? `1px solid ${dm.border}` : 'none', background: selected ? `${themeColor}08` : 'transparent' }}>
+                          <input type="radio" name="msg_ringtone" checked={selected} onChange={() => {
+                            setMsgRingtone(rt.id); localStorage.setItem('msg_ringtone', rt.id)
+                          }} style={{ cursor: 'pointer' }} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ color: selected ? themeColor : dm.text, fontSize: 14, fontWeight: selected ? 600 : 400 }}>{rt.emoji} {rt.label}</div>
                           </div>
-                        )
-                      })}
+                          <button onClick={() => {
+                            if (isPlaying) return
+                            if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }
+                            setPlayingRingtoneId(rt.id)
+                            if (rt.id === 'custom_msg') {
+                              const dataUrl = localStorage.getItem('custom_msg_ringtone_data')
+                              if (dataUrl) { try { const a = new Audio(dataUrl); a.volume = 0.8; a.onended = () => { setPlayingRingtoneId(null) }; previewAudioRef.current = a; a.play().catch(() => {}) } catch {} }
+                            } else { playRingtone(rt.id); setTimeout(() => setPlayingRingtoneId(null), 3000) }
+                          }} style={{ padding: '6px 12px', background: `${themeColor}18`, border: `1px solid ${themeColor}44`, borderRadius: 6, color: themeColor, fontSize: 12, fontWeight: 600, cursor: isPlaying ? 'default' : 'pointer', fontFamily: 'inherit', opacity: isPlaying ? 0.6 : 1 }}>
+                            {isPlaying ? '⏸ Playing' : '▶ Play'}
+                          </button>
+                          {rt.isCustom && (
+                            <button onClick={() => {
+                              localStorage.removeItem('custom_msg_ringtone_data')
+                              localStorage.removeItem('custom_msg_ringtone_name')
+                              setMsgRingtone('none')
+                              localStorage.setItem('msg_ringtone', 'none')
+                            }} style={{ padding: '6px 10px', background: 'rgba(239,68,68,0.15)', border: 'none', borderRadius: 6, color: '#ef4444', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+                              🗑️
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
+                    <div style={{ padding: '12px 16px', borderTop: `1px solid ${dm.border}` }}>
+                      <button onClick={() => {
+                        setRingtoneUploadType('msg')
+                        document.getElementById('ringtone-upload-input').click()
+                      }} style={{ width: '100%', padding: '10px 12px', background: `${themeColor}18`, border: `1px solid ${themeColor}44`, borderRadius: 8, color: themeColor, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+                        ➕ Upload Custom Ringtone
+                      </button>
                     </div>
                   </div>
 
-                  {/* Call Ringtone picker */}
+                  {/* Call Ringtone picker - List */}
                   <div style={{ margin: '16px 16px 6px', color: dm.subtext, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px' }}>Incoming Call Ringtone</div>
-                  <div style={{ background: dm.panel, padding: '14px 16px' }}>
-                    <div style={{ color: dm.subtext, fontSize: 12, marginBottom: 10 }}>Sound that plays when someone calls you</div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
-                      {CALL_RINGTONES.map(rt => {
-                        const selected = callRingtone === rt.id
-                        const hasCustom = rt.isCustom && localStorage.getItem(rt.storageKey)
-                        return (
-                          <div key={rt.id} style={{ position: 'relative' }}>
-                            <div onClick={() => {
-                              if (rt.isCustom && !hasCustom) { document.getElementById('ringtone-upload-input').click(); return }
-                              setCallRingtone(rt.id); localStorage.setItem('call_ringtone', rt.id)
-                              if (rt.id !== 'none' && rt.id !== 'call') {
-                                if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }
-                                if (rt.id === 'custom_call') {
-                                  const dataUrl = localStorage.getItem('custom_call_ringtone_data')
-                                  if (dataUrl) { try { const a = new Audio(dataUrl); a.volume = 0.85; previewAudioRef.current = a; a.play().catch(() => {}) } catch {} }
-                                } else { playRingtone(rt.id) }
-                              }
-                            }} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: selected ? `${themeColor}18` : dm.input, border: `1.5px solid ${selected ? themeColor : 'rgba(134,150,160,0.15)'}`, borderRadius: 10, cursor: 'pointer', transition: 'all 0.15s' }}>
-                              <span style={{ fontSize: 18 }}>{rt.emoji}</span>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ color: selected ? themeColor : dm.text, fontSize: 13, fontWeight: selected ? 700 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hasCustom ? (localStorage.getItem('custom_call_ringtone_name') || rt.label) : rt.label}</div>
-                                <div style={{ color: dm.subtext, fontSize: 10 }}>{rt.isCustom ? (hasCustom ? 'Tap to preview · Upload to change' : 'Tap to upload') : rt.desc}</div>
-                              </div>
-                              {selected && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={themeColor} strokeWidth="3" style={{ flexShrink: 0 }}><polyline points="20 6 9 17 4 12"/></svg>}
-                            </div>
-                            {rt.isCustom && hasCustom && (
-                              <div onClick={() => document.getElementById('ringtone-upload-input').click()} style={{ position: 'absolute', top: 6, right: 6, background: themeColor, borderRadius: 6, padding: '3px 7px', fontSize: 10, color: 'white', cursor: 'pointer', fontWeight: 600 }}>↑ Change</div>
-                            )}
+                  <div style={{ background: dm.panel, borderRadius: 12, overflow: 'hidden' }}>
+                    <div style={{ padding: '14px 16px', borderBottom: `1px solid ${dm.border}`, color: dm.subtext, fontSize: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+                      Sound that plays when someone calls you
+                      {uploadingRingtoneType === 'call' && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                          <div style={{ width: 14, height: 14, border: `2px solid ${themeColor}33`, borderTopColor: themeColor, borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                          <span style={{ fontSize: 11, color: themeColor }}>Uploading...</span>
+                        </div>
+                      )}
+                    </div>
+                    {[...CALL_RINGTONES.filter(rt => !rt.isCustom), ...(localStorage.getItem('custom_call_ringtone_data') && !uploadingRingtoneType ? [{ id: 'custom_call', label: localStorage.getItem('custom_call_ringtone_name') || 'My Ringtone', emoji: '🎵', isCustom: true }] : [])].map((rt, idx, arr) => {
+                      const selected = callRingtone === rt.id
+                      const isPlaying = playingRingtoneId === rt.id
+                      return (
+                        <div key={rt.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: idx < arr.length - 1 ? `1px solid ${dm.border}` : 'none', background: selected ? `${themeColor}08` : 'transparent' }}>
+                          <input type="radio" name="call_ringtone" checked={selected} onChange={() => {
+                            setCallRingtone(rt.id); localStorage.setItem('call_ringtone', rt.id)
+                          }} style={{ cursor: 'pointer' }} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ color: selected ? themeColor : dm.text, fontSize: 14, fontWeight: selected ? 600 : 400 }}>{rt.emoji} {rt.label}</div>
                           </div>
-                        )
-                      })}
+                          <button onClick={() => {
+                            if (isPlaying) return
+                            if (previewAudioRef.current) { try { previewAudioRef.current.pause() } catch {}; previewAudioRef.current = null }
+                            setPlayingRingtoneId(rt.id)
+                            if (rt.id === 'custom_call') {
+                              const dataUrl = localStorage.getItem('custom_call_ringtone_data')
+                              if (dataUrl) { try { const a = new Audio(dataUrl); a.volume = 0.85; a.onended = () => { setPlayingRingtoneId(null) }; previewAudioRef.current = a; a.play().catch(() => {}) } catch {} }
+                            } else { playRingtone(rt.id); setTimeout(() => setPlayingRingtoneId(null), 3000) }
+                          }} style={{ padding: '6px 12px', background: `${themeColor}18`, border: `1px solid ${themeColor}44`, borderRadius: 6, color: themeColor, fontSize: 12, fontWeight: 600, cursor: isPlaying ? 'default' : 'pointer', fontFamily: 'inherit', opacity: isPlaying ? 0.6 : 1 }}>
+                            {isPlaying ? '⏸ Playing' : '▶ Play'}
+                          </button>
+                          {rt.isCustom && (
+                            <button onClick={() => {
+                              localStorage.removeItem('custom_call_ringtone_data')
+                              localStorage.removeItem('custom_call_ringtone_name')
+                              setCallRingtone('none')
+                              localStorage.setItem('call_ringtone', 'none')
+                            }} style={{ padding: '6px 10px', background: 'rgba(239,68,68,0.15)', border: 'none', borderRadius: 6, color: '#ef4444', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+                              🗑️
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
+                    <div style={{ padding: '12px 16px', borderTop: `1px solid ${dm.border}` }}>
+                      <button onClick={() => {
+                        setRingtoneUploadType('call')
+                        document.getElementById('ringtone-upload-input').click()
+                      }} style={{ width: '100%', padding: '10px 12px', background: `${themeColor}18`, border: `1px solid ${themeColor}44`, borderRadius: 8, color: themeColor, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+                        ➕ Upload Custom Ringtone
+                      </button>
                     </div>
                   </div>
 
@@ -8442,7 +8469,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
               })()}
 
               {/* Encryption sub-page */}
-              {settingsPage === 'privacy' && (
+              {/* {settingsPage === 'privacy' && (
                 <div style={{ marginTop: 0 }}>
                   <div style={{ margin: '16px 16px 6px', color: dm.subtext, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px' }}>End-to-End Encryption</div>
                   <div style={{ background: dm.panel }}>
@@ -8472,7 +8499,7 @@ export default function Dashboard({ onLogout, onLogin, bioRegistered: _bioRegist
                     </div>
                   </div>
                 </div>
-              )}
+              )} */}
 
               {/* Blocked Users sub-page */}
               {settingsPage === 'blocked' && (
