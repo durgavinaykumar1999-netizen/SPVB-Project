@@ -9,7 +9,12 @@ from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List
 from datetime import datetime, timedelta
 from jose import jwt
-from pymongo import MongoClient, ASCENDING, DESCENDING
+try:
+    from pymongo import MongoClient, ASCENDING, DESCENDING
+except ImportError:
+    MongoClient = None
+    ASCENDING = None
+    DESCENDING = None
 import asyncio
 import json
 import os
@@ -2793,7 +2798,7 @@ async def schedule_message(
     contact_id: int = Form(...),
     message: str = Form(""),
     scheduled_time: str = Form(...),
-    file: UploadFile = None,
+    file: UploadFile = File(None),
     cu: dict = Depends(get_current_user)
 ):
     """Schedule a message to be sent at a future time"""
